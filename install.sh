@@ -308,17 +308,6 @@ check_dependencies() {
         install_packages "${missing[@]}"
     fi
 
-    if [[ "${CF_FALLBACK_ENABLED}" == "true" ]]; then
-        if ! python3 -c 'import jinja2' >/dev/null 2>&1; then
-            info "Installing Python dependency: jinja2"
-            detect_pkg_manager || error "Cannot install python dependency 'jinja2' automatically; please install it manually."
-            case "${PKG_MANAGER}" in
-                apt|yum|dnf) install_packages python3-jinja2 ;;
-                apk) install_packages py3-jinja2 ;;
-                *) error "Unsupported package manager for installing jinja2; please install it manually." ;;
-            esac
-        fi
-    fi
     success "Dependencies satisfied"
 }
 
@@ -333,20 +322,86 @@ should_override_fallback_address() {
     [[ "${SUDOKU_FALLBACK}" == "${DEFAULT_SUDOKU_FALLBACK}" ]]
 }
 
+ensure_cf_fallback_pydeps() {
+    mkdir -p "${FALLBACK_LIB_DIR}/pydeps"
+
+    if python3 -c 'import flask, jinja2' >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if ! python3 -m pip --version >/dev/null 2>&1; then
+        info "Installing pip (required for CF fallback Python deps)..."
+        if detect_pkg_manager; then
+            case "${PKG_MANAGER}" in
+                apt|yum|dnf) install_packages python3-pip ;;
+                apk) install_packages py3-pip ;;
+                *) ;;
+            esac
+        fi
+    fi
+
+    if ! python3 -m pip --version >/dev/null 2>&1; then
+        python3 -m ensurepip --upgrade >/dev/null 2>&1 || true
+    fi
+    if ! python3 -m pip --version >/dev/null 2>&1; then
+        return 1
+    fi
+
+    info "Installing CF fallback Python deps (Flask + Jinja2)..."
+    if ! PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_ROOT_USER_ACTION=ignore \
+        python3 -m pip install --no-cache-dir --upgrade --target "${FALLBACK_LIB_DIR}/pydeps" Flask Jinja2; then
+        return 1
+    fi
+
+    python3 -c "import sys; sys.path.insert(0, '${FALLBACK_LIB_DIR}/pydeps'); import flask, jinja2" >/dev/null 2>&1
+}
+
 write_cf_fallback_server() {
     mkdir -p "${FALLBACK_LIB_DIR}"
 
     cat > "${FALLBACK_LIB_DIR}/server.py" << 'PY'
 import argparse
 import json
-import secrets
-from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import os
+import sys
+
+
+deps_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pydeps")
+if os.path.isdir(deps_dir):
+    sys.path.insert(0, deps_dir)
+
+from flask import Flask, request
+
+from cloudflare_error_page import render as render_cf_error_page
 
 
 def _load_params(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+def _create_app(base_params: dict) -> Flask:
+    app = Flask(__name__)
+
+    @app.route("/", defaults={"path": ""}, methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+    @app.route("/<path:path>", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+    def index(path: str):  # noqa: ARG001
+        params = dict(base_params or {})
+
+        ray_id = (request.headers.get("Cf-Ray") or "").strip()[:16]
+        if ray_id:
+            params["ray_id"] = ray_id
+
+        client_ip = request.headers.get("X-Forwarded-For")
+        if client_ip:
+            client_ip = client_ip.split(",")[0].strip()
+        if not client_ip:
+            client_ip = request.remote_addr
+        if client_ip:
+            params["client_ip"] = client_ip
+
+        return render_cf_error_page(params), 500
+
+    return app
 
 
 def main() -> int:
@@ -354,48 +409,11 @@ def main() -> int:
     parser.add_argument("--bind", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=10232)
     parser.add_argument("--params", required=True)
-    parser.add_argument("--templates", required=True)
     args = parser.parse_args()
 
-    from jinja2 import Environment, FileSystemLoader, select_autoescape
-
     base_params = _load_params(args.params) or {}
-    if not base_params.get("time"):
-        utc_now = datetime.now(timezone.utc)
-        base_params["time"] = utc_now.strftime("%Y-%m-%d %H:%M:%S UTC")
-    if not base_params.get("ray_id"):
-        base_params["ray_id"] = secrets.token_hex(8)
-
-    env = Environment(
-        loader=FileSystemLoader(args.templates),
-        autoescape=select_autoescape(),
-        trim_blocks=True,
-        lstrip_blocks=True,
-    )
-    template = env.get_template("template.html")
-    rendered_page = template.render(params=base_params).encode("utf-8")
-
-    class Handler(BaseHTTPRequestHandler):
-        def _write_page(self, method: str) -> None:
-            body = rendered_page
-            self.send_response(500)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            if method != "HEAD":
-                self.wfile.write(body)
-
-        def do_GET(self) -> None:  # noqa: N802
-            self._write_page("GET")
-
-        def do_HEAD(self) -> None:  # noqa: N802
-            self._write_page("HEAD")
-
-        def log_message(self, format: str, *args) -> None:  # noqa: A002
-            return
-
-    server = HTTPServer((args.bind, args.port), Handler)
-    server.serve_forever()
+    app = _create_app(base_params)
+    app.run(debug=False, use_reloader=False, host=args.bind, port=args.port)
     return 0
 
 
@@ -437,10 +455,10 @@ download_cf_fallback_vendor() {
         return 1
     fi
 
-    rm -rf "${FALLBACK_LIB_DIR}/templates"
-    mkdir -p "${FALLBACK_LIB_DIR}/templates"
-    cp "${src_root}/cloudflare_error_page/templates/template.html" "${FALLBACK_LIB_DIR}/templates/template.html"
-    cp "${src_root}/resources/styles/main.css" "${FALLBACK_LIB_DIR}/templates/main.css"
+    rm -rf "${FALLBACK_LIB_DIR}/templates" "${FALLBACK_LIB_DIR}/cloudflare_error_page"
+    cp -r "${src_root}/cloudflare_error_page" "${FALLBACK_LIB_DIR}/cloudflare_error_page"
+    mkdir -p "${FALLBACK_LIB_DIR}/cloudflare_error_page/templates"
+    cp "${src_root}/resources/styles/main.css" "${FALLBACK_LIB_DIR}/cloudflare_error_page/templates/main.css"
     cp "${src_root}/examples/default.json" "${FALLBACK_LIB_DIR}/params.json"
 
     rm -rf "${temp_dir}"
@@ -465,7 +483,9 @@ StartLimitBurst=3
 
 [Service]
 Type=simple
-ExecStart=${pybin} ${FALLBACK_LIB_DIR}/server.py --bind ${bind} --port ${port} --params ${FALLBACK_LIB_DIR}/params.json --templates ${FALLBACK_LIB_DIR}/templates
+WorkingDirectory=${FALLBACK_LIB_DIR}
+Environment=PYTHONUNBUFFERED=1
+ExecStart=${pybin} ${FALLBACK_LIB_DIR}/server.py --bind ${bind} --port ${port} --params ${FALLBACK_LIB_DIR}/params.json
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=1048576
@@ -482,7 +502,7 @@ start_cf_fallback_service() {
     if ! command -v systemctl &> /dev/null; then
         return 1
     fi
-    if [[ ! -f "${FALLBACK_LIB_DIR}/server.py" || ! -f "${FALLBACK_LIB_DIR}/params.json" || ! -f "${FALLBACK_LIB_DIR}/templates/template.html" || ! -f "${FALLBACK_LIB_DIR}/templates/main.css" ]]; then
+    if [[ ! -f "${FALLBACK_LIB_DIR}/server.py" || ! -f "${FALLBACK_LIB_DIR}/params.json" || ! -f "${FALLBACK_LIB_DIR}/cloudflare_error_page/__init__.py" || ! -f "${FALLBACK_LIB_DIR}/cloudflare_error_page/templates/template.html" || ! -f "${FALLBACK_LIB_DIR}/cloudflare_error_page/templates/main.css" ]]; then
         return 1
     fi
 
@@ -512,6 +532,11 @@ setup_cf_fallback() {
 
     if ! download_cf_fallback_vendor; then
         warn "Failed to download ${SUDOKU_CF_FALLBACK_REPO}; using fallback_address=${SUDOKU_FALLBACK}"
+        return 0
+    fi
+
+    if ! ensure_cf_fallback_pydeps; then
+        warn "Failed to install CF fallback Python deps; skipping CF fallback service (fallback_address=${SUDOKU_FALLBACK})"
         return 0
     fi
 
@@ -639,6 +664,10 @@ refresh_cf_fallback_if_present() {
     info "Refreshing ${FALLBACK_SERVICE_NAME} assets..."
     if ! download_cf_fallback_vendor; then
         warn "Failed to refresh ${FALLBACK_SERVICE_NAME} assets (download failed)."
+        return 0
+    fi
+    if ! ensure_cf_fallback_pydeps; then
+        warn "Failed to refresh ${FALLBACK_SERVICE_NAME} assets (python deps missing)."
         return 0
     fi
     write_cf_fallback_server
