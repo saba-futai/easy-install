@@ -21,6 +21,7 @@
 #   SUDOKU_HTTP_MASK_TLS  - Use HTTPS in HTTP mask tunnel modes (default: false)
 #   SUDOKU_HTTP_MASK_MULTIPLEX - HTTP mask mux: off/auto/on (default: on)
 #   SUDOKU_HTTP_MASK_HOST - Override HTTP Host/SNI in tunnel modes (default: empty)
+#   SUDOKU_HTTP_MASK_PATH_ROOT - Optional first-level path prefix for HTTP mask/tunnel endpoints (default: empty)
 #
 
 set -e
@@ -46,6 +47,7 @@ SUDOKU_HTTP_MASK_MODE="${SUDOKU_HTTP_MASK_MODE:-auto}"
 SUDOKU_HTTP_MASK_TLS="${SUDOKU_HTTP_MASK_TLS:-false}"
 SUDOKU_HTTP_MASK_MULTIPLEX="${SUDOKU_HTTP_MASK_MULTIPLEX:-on}"
 SUDOKU_HTTP_MASK_HOST="${SUDOKU_HTTP_MASK_HOST:-}"
+SUDOKU_HTTP_MASK_PATH_ROOT="${SUDOKU_HTTP_MASK_PATH_ROOT:-}"
 INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/sudoku"
 SERVICE_NAME="sudoku"
@@ -57,6 +59,7 @@ HTTP_MASK_MODE="auto"
 HTTP_MASK_TLS="false"
 HTTP_MASK_MULTIPLEX="on"
 HTTP_MASK_HOST=""
+HTTP_MASK_PATH_ROOT=""
 CF_FALLBACK_ENABLED="true"
 CF_FALLBACK_BIND="127.0.0.1"
 CF_FALLBACK_PORT="10232"
@@ -144,6 +147,30 @@ normalize_settings() {
         error "Invalid SUDOKU_CF_FALLBACK_FORCE=${SUDOKU_CF_FALLBACK_FORCE} (expected true/false)"
     fi
 
+    if ! is_valid_port "${SUDOKU_PORT}"; then
+        error "Invalid SUDOKU_PORT=${SUDOKU_PORT} (expected 1-65535)"
+    fi
+    if ! is_valid_port "${SUDOKU_CLIENT_PORT}"; then
+        error "Invalid SUDOKU_CLIENT_PORT=${SUDOKU_CLIENT_PORT} (expected 1-65535)"
+    fi
+
+    SUDOKU_FALLBACK=$(trim_space "${SUDOKU_FALLBACK}")
+    if [[ -z "${SUDOKU_FALLBACK}" ]]; then
+        error "Invalid SUDOKU_FALLBACK (expected host:port)"
+    fi
+    local fallback_host fallback_port
+    fallback_port="${SUDOKU_FALLBACK##*:}"
+    fallback_host="${SUDOKU_FALLBACK%:*}"
+    if [[ -z "${fallback_host}" || -z "${fallback_port}" ]]; then
+        error "Invalid SUDOKU_FALLBACK=${SUDOKU_FALLBACK} (expected host:port)"
+    fi
+    if ! is_valid_port "${fallback_port}"; then
+        error "Invalid SUDOKU_FALLBACK=${SUDOKU_FALLBACK} (invalid port; expected 1-65535)"
+    fi
+    if [[ "${fallback_host}" == *:* && "${fallback_host}" != \[*\] ]]; then
+        error "Invalid SUDOKU_FALLBACK=${SUDOKU_FALLBACK} (IPv6 must be in [::1]:port form)"
+    fi
+
     HTTP_MASK_MODE=$(trim_space "${SUDOKU_HTTP_MASK_MODE}")
     HTTP_MASK_MODE=$(echo "${HTTP_MASK_MODE}" | tr '[:upper:]' '[:lower:]')
     if [[ -z "${HTTP_MASK_MODE}" ]]; then
@@ -156,6 +183,17 @@ normalize_settings() {
 
     HTTP_MASK_HOST=$(trim_space "${SUDOKU_HTTP_MASK_HOST}")
     HTTP_MASK_TLS="${http_mask_tls}"
+
+    HTTP_MASK_PATH_ROOT=$(trim_space "${SUDOKU_HTTP_MASK_PATH_ROOT}")
+    while [[ "${HTTP_MASK_PATH_ROOT}" == /* ]]; do
+        HTTP_MASK_PATH_ROOT="${HTTP_MASK_PATH_ROOT#/}"
+    done
+    while [[ "${HTTP_MASK_PATH_ROOT}" == */ ]]; do
+        HTTP_MASK_PATH_ROOT="${HTTP_MASK_PATH_ROOT%/}"
+    done
+    if [[ -n "${HTTP_MASK_PATH_ROOT}" && ! "${HTTP_MASK_PATH_ROOT}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        error "Invalid SUDOKU_HTTP_MASK_PATH_ROOT=${SUDOKU_HTTP_MASK_PATH_ROOT} (expected single segment [A-Za-z0-9_-], e.g. aabbcc)"
+    fi
 
     HTTP_MASK_MULTIPLEX=$(trim_space "${SUDOKU_HTTP_MASK_MULTIPLEX}")
     HTTP_MASK_MULTIPLEX=$(echo "${HTTP_MASK_MULTIPLEX}" | tr '[:upper:]' '[:lower:]')
@@ -790,7 +828,9 @@ create_config() {
     cat > "${CONFIG_DIR}/config.json" << EOF
 {
   "mode": "server",
+  "transport": "tcp",
   "local_port": ${SUDOKU_PORT},
+  "server_address": "",
   "fallback_address": "${SUDOKU_FALLBACK}",
   "key": "${MASTER_PUBLIC_KEY}",
   "aead": "chacha20-poly1305",
@@ -800,15 +840,27 @@ create_config() {
   "padding_max": 7,
   "custom_table": "${CUSTOM_TABLE}",
   "enable_pure_downlink": false,
-  "disable_http_mask": ${DISABLE_HTTP_MASK},
-  "http_mask_mode": "${HTTP_MASK_MODE}",
-  "http_mask_tls": ${HTTP_MASK_TLS},
-  "http_mask_multiplex": "${HTTP_MASK_MULTIPLEX}",
-  "http_mask_host": "${HTTP_MASK_HOST}"
+  "httpmask": {
+    "disable": ${DISABLE_HTTP_MASK},
+    "mode": "${HTTP_MASK_MODE}",
+    "tls": ${HTTP_MASK_TLS},
+    "host": "${HTTP_MASK_HOST}",
+    "path_root": "${HTTP_MASK_PATH_ROOT}",
+    "multiplex": "${HTTP_MASK_MULTIPLEX}"
+  }
 }
 EOF
     
     chmod 600 "${CONFIG_DIR}/config.json"
+
+    info "Testing server configuration..."
+    local test_output
+    if ! test_output=$("${INSTALL_DIR}/sudoku" -c "${CONFIG_DIR}/config.json" -test 2>&1); then
+        echo "${test_output}" >&2
+        error "Config validation failed: ${CONFIG_DIR}/config.json"
+    fi
+    success "Configuration validated"
+
     success "Configuration saved to ${CONFIG_DIR}/config.json"
 }
 
@@ -885,6 +937,7 @@ generate_short_link() {
     cat > "${temp_cfg}" << EOF
 {
   "mode": "client",
+  "transport": "tcp",
   "local_port": ${SUDOKU_CLIENT_PORT},
   "server_address": "${server_address}",
   "key": "${AVAILABLE_PRIVATE_KEY}",
@@ -894,20 +947,24 @@ generate_short_link() {
   "padding_max": 15,
   "custom_table": "${CUSTOM_TABLE}",
   "enable_pure_downlink": false,
-  "disable_http_mask": ${DISABLE_HTTP_MASK},
-  "http_mask_mode": "${HTTP_MASK_MODE}",
-  "http_mask_tls": ${HTTP_MASK_TLS},
-  "http_mask_multiplex": "${HTTP_MASK_MULTIPLEX}",
-  "http_mask_host": "${HTTP_MASK_HOST}",
+  "httpmask": {
+    "disable": ${DISABLE_HTTP_MASK},
+    "mode": "${HTTP_MASK_MODE}",
+    "tls": ${HTTP_MASK_TLS},
+    "host": "${HTTP_MASK_HOST}",
+    "path_root": "${HTTP_MASK_PATH_ROOT}",
+    "multiplex": "${HTTP_MASK_MULTIPLEX}"
+  },
   "rule_urls": ["global"]
 }
 EOF
 
-    export_output=$("${INSTALL_DIR}/sudoku" -c "${temp_cfg}" -export-link 2>/dev/null || true)
+    export_output=$("${INSTALL_DIR}/sudoku" -c "${temp_cfg}" -export-link 2>&1 || true)
     SHORT_LINK=$(echo "${export_output}" | awk -F 'Short link: ' '/Short link: /{print $2; exit}')
     rm -rf "${temp_dir}"
 
     if [[ -z "${SHORT_LINK}" ]]; then
+        echo "${export_output}" >&2
         error "Failed to generate short link"
     fi
     success "Short link generated"

@@ -253,6 +253,9 @@ sudo SUDOKU_HTTP_MASK_MODE=poll bash -c "$(curl -fsSL https://raw.githubusercont
 
 # 开启 tunnel 模式 HTTPS（v0.1.4 起不再按端口自动推断 TLS）
 sudo SUDOKU_HTTP_MASK_TLS=true bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
+
+# HTTP mask/tunnel 路径前缀（一级路径；例如 aabbcc => /aabbcc/session /aabbcc/stream）
+sudo SUDOKU_HTTP_MASK_PATH_ROOT=aabbcc bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
 ```
 
 ### 卸载
@@ -596,6 +599,9 @@ sudo SUDOKU_HTTP_MASK_MODE=poll bash -c "$(curl -fsSL https://raw.githubusercont
 
 # Enable HTTPS in tunnel modes (since v0.1.4, no port-based TLS inference)
 sudo SUDOKU_HTTP_MASK_TLS=true bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
+
+# HTTP mask/tunnel path root (single segment; e.g. aabbcc => /aabbcc/session /aabbcc/stream)
+sudo SUDOKU_HTTP_MASK_PATH_ROOT=aabbcc bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
 ```
 
 ### Uninstall
