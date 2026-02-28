@@ -1184,16 +1184,17 @@ generate_keypair() {
     
     AVAILABLE_PRIVATE_KEY=$(
         printf '%s\n' "$keygen_output" \
-            | sed -n 's/.*Available Private Key:[[:space:]]*\\([0-9a-fA-F][0-9a-fA-F]*\\).*/\\1/p' \
+            | sed -n 's/.*Available Private Key:[[:space:]]*\([0-9a-fA-F][0-9a-fA-F]*\).*/\1/p' \
             | head -n 1
     )
     MASTER_PUBLIC_KEY=$(
         printf '%s\n' "$keygen_output" \
-            | sed -n 's/.*Master Public Key:[[:space:]]*\\([0-9a-fA-F][0-9a-fA-F]*\\).*/\\1/p' \
+            | sed -n 's/.*Master Public Key:[[:space:]]*\([0-9a-fA-F][0-9a-fA-F]*\).*/\1/p' \
             | head -n 1
     )
     
     if [[ -z "$AVAILABLE_PRIVATE_KEY" || -z "$MASTER_PUBLIC_KEY" ]]; then
+        echo "${keygen_output}" >&2
         error "Failed to generate keypair"
     fi
     
@@ -1535,7 +1536,7 @@ uninstall() {
 
 main() {
     # Handle uninstall
-    if [[ "${1:-}" == "--uninstall" || "${1:-}" == "-u" ]]; then
+    if [[ "${1:-}" == "--uninstall" || "${1:-}" == "-u" || "${0:-}" == "--uninstall" || "${0:-}" == "-u" ]]; then
         uninstall
     fi
     
