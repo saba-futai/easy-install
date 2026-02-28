@@ -248,7 +248,7 @@ sudo SERVER_IP="example.com" bash -c "$(curl -fsSL https://raw.githubusercontent
 # 关闭 HTTP 掩码（直连 TCP）
 sudo SUDOKU_HTTP_MASK=false bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
 
-# 指定 HTTP 掩码模式（auto / stream / poll / legacy）
+# 指定 HTTP 掩码模式（auto / stream / poll / legacy / ws）
 sudo SUDOKU_HTTP_MASK_MODE=poll bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
 
 # 开启 tunnel 模式 HTTPS（v0.1.4 起不再按端口自动推断 TLS）
@@ -266,7 +266,7 @@ sudo bash install.sh --uninstall
 
 ### 更新内核
 
-再次运行一键命令会自动检测已有安装，仅更新 `/usr/local/bin/sudoku` 并重启服务，不会覆盖 `/etc/sudoku/config.json`。
+再次运行一键命令会自动检测已有安装，仅更新 `/usr/local/bin/sudoku` 并重启服务，不会覆盖 `/etc/sudoku/config.json`（如检测到旧版 `http_mask_*` / `disable_http_mask` 遗留字段，会自动迁移到 `httpmask` 结构）。
 
 ---
 
@@ -594,7 +594,7 @@ sudo SERVER_IP="example.com" bash -c "$(curl -fsSL https://raw.githubusercontent
 # Disable HTTP mask (raw TCP)
 sudo SUDOKU_HTTP_MASK=false bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
 
-# HTTP mask mode (auto / stream / poll / legacy)
+# HTTP mask mode (auto / stream / poll / legacy / ws)
 sudo SUDOKU_HTTP_MASK_MODE=poll bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
 
 # Enable HTTPS in tunnel modes (since v0.1.4, no port-based TLS inference)
@@ -612,7 +612,7 @@ sudo bash install.sh --uninstall
 
 ### Update
 
-Re-run the one-click command to update `/usr/local/bin/sudoku` and restart the service; it will not overwrite `/etc/sudoku/config.json`.
+Re-run the one-click command to update `/usr/local/bin/sudoku` and restart the service; it will not overwrite `/etc/sudoku/config.json` (legacy `http_mask_*` / `disable_http_mask` fields will be migrated into `httpmask` automatically if detected).
 
 ---
 

@@ -17,7 +17,7 @@
 #   SUDOKU_CF_FALLBACK_FORCE - Force override SUDOKU_FALLBACK when CF fallback starts (default: false)
 #   SERVER_IP        - Override public host/IP used in short link & Clash config (default: auto-detect)
 #   SUDOKU_HTTP_MASK - Enable HTTP mask (default: true)
-#   SUDOKU_HTTP_MASK_MODE - HTTP mask mode: auto/stream/poll/legacy (default: auto)
+#   SUDOKU_HTTP_MASK_MODE - HTTP mask mode: auto/stream/poll/legacy/ws (default: auto)
 #   SUDOKU_HTTP_MASK_TLS  - Use HTTPS in HTTP mask tunnel modes (default: false)
 #   SUDOKU_HTTP_MASK_MULTIPLEX - HTTP mask mux: off/auto/on (default: on)
 #   SUDOKU_HTTP_MASK_HOST - Override HTTP Host/SNI in tunnel modes (default: empty)
@@ -177,8 +177,8 @@ normalize_settings() {
         HTTP_MASK_MODE="auto"
     fi
     case "${HTTP_MASK_MODE}" in
-        auto|stream|poll|legacy) ;;
-        *) error "Invalid SUDOKU_HTTP_MASK_MODE=${SUDOKU_HTTP_MASK_MODE} (expected auto/stream/poll/legacy)" ;;
+        auto|stream|poll|legacy|ws) ;;
+        *) error "Invalid SUDOKU_HTTP_MASK_MODE=${SUDOKU_HTTP_MASK_MODE} (expected auto/stream/poll/legacy/ws)" ;;
     esac
 
     HTTP_MASK_HOST=$(trim_space "${SUDOKU_HTTP_MASK_HOST}")
@@ -399,47 +399,11 @@ write_cf_fallback_server() {
 
     cat > "${FALLBACK_LIB_DIR}/server.py" << 'PY'
 import argparse
+import datetime as _dt
+import html
 import json
-import os
-import sys
-
-
-deps_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pydeps")
-if os.path.isdir(deps_dir):
-    sys.path.insert(0, deps_dir)
-
-from flask import Flask, request
-
-from cloudflare_error_page import render as render_cf_error_page
-
-
-def _load_params(path: str) -> dict:
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-def _create_app(base_params: dict) -> Flask:
-    app = Flask(__name__)
-
-    @app.route("/", defaults={"path": ""}, methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-    @app.route("/<path:path>", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-    def index(path: str):  # noqa: ARG001
-        params = dict(base_params or {})
-
-        ray_id = (request.headers.get("Cf-Ray") or "").strip()[:16]
-        if ray_id:
-            params["ray_id"] = ray_id
-
-        client_ip = request.headers.get("X-Forwarded-For")
-        if client_ip:
-            client_ip = client_ip.split(",")[0].strip()
-        if not client_ip:
-            client_ip = request.remote_addr
-        if client_ip:
-            params["client_ip"] = client_ip
-
-        return render_cf_error_page(params), 500
-
-    return app
+import socketserver
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 def main() -> int:
@@ -449,15 +413,141 @@ def main() -> int:
     parser.add_argument("--params", required=True)
     args = parser.parse_args()
 
-    base_params = _load_params(args.params) or {}
-    app = _create_app(base_params)
-    app.run(debug=False, use_reloader=False, host=args.bind, port=args.port)
+    base_params = {}
+    try:
+        with open(args.params, "r", encoding="utf-8") as f:
+            base_params = json.load(f) or {}
+    except Exception:
+        base_params = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        server_version = "cloudflare"
+        sys_version = ""
+
+        def _client_ip(self) -> str:
+            xff = (self.headers.get("X-Forwarded-For") or "").strip()
+            if xff:
+                return xff.split(",")[0].strip()
+            return (self.client_address[0] or "").strip()
+
+        def _ray_id(self) -> str:
+            v = (self.headers.get("Cf-Ray") or self.headers.get("CF-Ray") or "").strip()
+            return v[:32]
+
+        def _render(self) -> bytes:
+            params = dict(base_params or {})
+            params.setdefault("title", "500 Internal Server Error")
+            params.setdefault("headline", "Internal Server Error")
+            params.setdefault("subtitle", "The web server is returning an unknown error")
+            params.setdefault("footer", "cloudflare")
+
+            ray = self._ray_id()
+            cip = self._client_ip()
+            now = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+            def esc(x: object) -> str:
+                return html.escape("" if x is None else str(x), quote=True)
+
+            # Minimal Cloudflare-like style (no external deps; safe for restricted networks).
+            css = """
+            :root{--bg:#f2f2f2;--fg:#313131;--muted:#777;--card:#fff;--border:#e5e5e5;}
+            *{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,'Noto Sans',sans-serif;background:var(--bg);color:var(--fg)}
+            .wrap{max-width:720px;margin:0 auto;padding:32px 16px}
+            .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:24px}
+            h1{font-size:22px;margin:0 0 6px}h2{font-size:14px;color:var(--muted);margin:0 0 16px;font-weight:600}
+            .hr{height:1px;background:var(--border);margin:18px 0}
+            .meta{display:grid;grid-template-columns:1fr;gap:8px;font-size:13px;color:var(--muted)}
+            .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace}
+            .badge{display:inline-block;padding:2px 8px;border-radius:999px;border:1px solid var(--border);background:#fafafa}
+            .footer{margin-top:14px;font-size:12px;color:var(--muted);text-transform:lowercase;letter-spacing:.06em}
+            """.strip()
+
+            html_doc = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{esc(params.get("title"))}</title>
+  <style>{css}</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="badge mono">Error 500</div>
+      <h1>{esc(params.get("headline"))}</h1>
+      <h2>{esc(params.get("subtitle"))}</h2>
+      <div class="hr"></div>
+      <div class="meta">
+        <div>Ray ID: <span class="mono">{esc(ray) if ray else "-"}</span></div>
+        <div>Your IP: <span class="mono">{esc(cip) if cip else "-"}</span></div>
+        <div>Timestamp: <span class="mono">{esc(now)}</span></div>
+      </div>
+      <div class="footer">{esc(params.get("footer"))}</div>
+    </div>
+  </div>
+</body>
+</html>
+"""
+            return html_doc.encode("utf-8", errors="replace")
+
+        def _send_500(self) -> None:
+            body = self._render()
+            self.send_response(500)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+
+        def do_GET(self):  # noqa: N802
+            self._send_500()
+
+        def do_HEAD(self):  # noqa: N802
+            self._send_500()
+
+        def do_POST(self):  # noqa: N802
+            self._send_500()
+
+        def do_PUT(self):  # noqa: N802
+            self._send_500()
+
+        def do_PATCH(self):  # noqa: N802
+            self._send_500()
+
+        def do_DELETE(self):  # noqa: N802
+            self._send_500()
+
+        def do_OPTIONS(self):  # noqa: N802
+            self._send_500()
+
+        def log_message(self, format, *args):  # noqa: A003
+            # Quiet by default; this service is only for decoy fallback.
+            return
+
+    class ReusableTCPServer(ThreadingHTTPServer):
+        allow_reuse_address = True
+
+    with ReusableTCPServer((args.bind, args.port), Handler) as httpd:
+        httpd.daemon_threads = True
+        httpd.serve_forever(poll_interval=0.5)
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
 PY
+
+    if [[ ! -f "${FALLBACK_LIB_DIR}/params.json" ]]; then
+        cat > "${FALLBACK_LIB_DIR}/params.json" << 'JSON'
+{
+  "title": "500 Internal Server Error",
+  "headline": "Internal Server Error",
+  "subtitle": "The web server is returning an unknown error",
+  "footer": "cloudflare"
+}
+JSON
+    fi
 }
 
 download_cf_fallback_vendor() {
@@ -540,7 +630,7 @@ start_cf_fallback_service() {
     if ! command -v systemctl &> /dev/null; then
         return 1
     fi
-    if [[ ! -f "${FALLBACK_LIB_DIR}/server.py" || ! -f "${FALLBACK_LIB_DIR}/params.json" || ! -f "${FALLBACK_LIB_DIR}/cloudflare_error_page/__init__.py" || ! -f "${FALLBACK_LIB_DIR}/cloudflare_error_page/templates/template.html" || ! -f "${FALLBACK_LIB_DIR}/cloudflare_error_page/templates/main.css" ]]; then
+    if [[ ! -f "${FALLBACK_LIB_DIR}/server.py" || ! -f "${FALLBACK_LIB_DIR}/params.json" ]]; then
         return 1
     fi
 
@@ -566,18 +656,7 @@ setup_cf_fallback() {
         return 0
     fi
 
-    info "Setting up Cloudflare 500 error page fallback (from ${SUDOKU_CF_FALLBACK_REPO})..."
-
-    if ! download_cf_fallback_vendor; then
-        warn "Failed to download ${SUDOKU_CF_FALLBACK_REPO}; using fallback_address=${SUDOKU_FALLBACK}"
-        return 0
-    fi
-
-    if ! ensure_cf_fallback_pydeps; then
-        warn "Failed to install CF fallback Python deps; skipping CF fallback service (fallback_address=${SUDOKU_FALLBACK})"
-        return 0
-    fi
-
+    info "Setting up Cloudflare-style 500 error page fallback (embedded, no pip required)..."
     write_cf_fallback_server
 
     local selected_port=""
@@ -688,6 +767,73 @@ restart_service_if_present() {
     fi
 }
 
+extract_port_from_hostport() {
+    local hp="${1:-}"
+    if [[ -z "${hp}" ]]; then
+        return 1
+    fi
+    if [[ "${hp}" == \[*\]:* ]]; then
+        printf '%s' "${hp##*]:}"
+        return 0
+    fi
+    printf '%s' "${hp##*:}"
+}
+
+extract_host_from_hostport() {
+    local hp="${1:-}"
+    if [[ -z "${hp}" ]]; then
+        return 1
+    fi
+    if [[ "${hp}" == \[*\]:* ]]; then
+        hp="${hp#[}"
+        printf '%s' "${hp%%]:*}"
+        return 0
+    fi
+    printf '%s' "${hp%:*}"
+}
+
+unique_ports() {
+    local out=()
+    local seen=" "
+    local p
+    for p in "$@"; do
+        if [[ -z "${p}" ]]; then
+            continue
+        fi
+        if ! is_valid_port "${p}"; then
+            continue
+        fi
+        if [[ "${seen}" == *" ${p} "* ]]; then
+            continue
+        fi
+        out+=("${p}")
+        seen+=" ${p} "
+    done
+    printf '%s\n' "${out[@]}"
+}
+
+host_equivalent_for_bind() {
+    local bind="${1:-}"
+    local host="${2:-}"
+    if [[ -z "${bind}" || -z "${host}" ]]; then
+        return 1
+    fi
+    if [[ "${bind}" == "${host}" ]]; then
+        return 0
+    fi
+    case "${bind}" in
+        0.0.0.0)
+            [[ "${host}" == "127.0.0.1" || "${host}" == "0.0.0.0" ]]
+            ;;
+        ::|::0)
+            [[ "${host}" == "::1" || "${host}" == "::" ]]
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 refresh_cf_fallback_if_present() {
     if [[ "${CF_FALLBACK_ENABLED}" != "true" ]]; then
         return 0
@@ -700,23 +846,106 @@ refresh_cf_fallback_if_present() {
     fi
 
     info "Refreshing ${FALLBACK_SERVICE_NAME} assets..."
-    if ! download_cf_fallback_vendor; then
-        warn "Failed to refresh ${FALLBACK_SERVICE_NAME} assets (download failed)."
-        return 0
-    fi
-    if ! ensure_cf_fallback_pydeps; then
-        warn "Failed to refresh ${FALLBACK_SERVICE_NAME} assets (python deps missing)."
-        return 0
-    fi
     write_cf_fallback_server
-    systemctl daemon-reload >/dev/null 2>&1 || true
-    systemctl restart "${FALLBACK_SERVICE_NAME}" >/dev/null 2>&1 || true
-    sleep 1
-    if systemctl is-active --quiet "${FALLBACK_SERVICE_NAME}"; then
-        success "${FALLBACK_SERVICE_NAME} refreshed"
+
+    systemctl stop "${FALLBACK_SERVICE_NAME}" >/dev/null 2>&1 || true
+    systemctl reset-failed "${FALLBACK_SERVICE_NAME}" >/dev/null 2>&1 || true
+
+    local cfg_fallback="" cfg_host="" cfg_port=""
+    if [[ -f "${CONFIG_DIR}/config.json" ]]; then
+        cfg_fallback=$(jq -r '.fallback_address // ""' "${CONFIG_DIR}/config.json" 2>/dev/null || true)
+        cfg_fallback=$(trim_space "${cfg_fallback}")
+        if [[ -n "${cfg_fallback}" ]]; then
+            cfg_host=$(extract_host_from_hostport "${cfg_fallback}" 2>/dev/null || true)
+            cfg_port=$(extract_port_from_hostport "${cfg_fallback}" 2>/dev/null || true)
+        fi
+    fi
+
+    local try_ports=""
+    if [[ -n "${cfg_host}" && -n "${cfg_port}" ]] && host_equivalent_for_bind "${CF_FALLBACK_BIND}" "${cfg_host}"; then
+        try_ports=$(unique_ports "${cfg_port}" "${CF_FALLBACK_PORT}" "${CF_FALLBACK_PORT_FALLBACK}")
+    else
+        try_ports=$(unique_ports "${CF_FALLBACK_PORT}" "${CF_FALLBACK_PORT_FALLBACK}")
+    fi
+
+    local selected_port="" p=""
+    while IFS= read -r p; do
+        if [[ -z "${p}" ]]; then
+            continue
+        fi
+        if start_cf_fallback_service "${CF_FALLBACK_BIND}" "${p}"; then
+            selected_port="${p}"
+            break
+        fi
+    done <<< "${try_ports}"
+
+    if [[ -n "${selected_port}" ]]; then
+        success "${FALLBACK_SERVICE_NAME} refreshed (listening: $(join_host_port "${CF_FALLBACK_BIND}" "${selected_port}"))"
     else
         warn "${FALLBACK_SERVICE_NAME} may have issues. Check: journalctl -u ${FALLBACK_SERVICE_NAME}"
     fi
+}
+
+config_has_httpmask_object() {
+    local path="${1:-}"
+    [[ -f "${path}" ]] || return 1
+    jq -e '(.httpmask? | type) == "object"' "${path}" >/dev/null 2>&1
+}
+
+config_has_legacy_httpmask_fields() {
+    local path="${1:-}"
+    [[ -f "${path}" ]] || return 1
+    jq -e '
+        has("disable_http_mask")
+        or has("http_mask_mode")
+        or has("http_mask_tls")
+        or has("http_mask_host")
+        or has("path_root")
+        or has("http_mask_path_root")
+        or has("http_mask_multiplex")
+    ' "${path}" >/dev/null 2>&1
+}
+
+migrate_legacy_httpmask_config_inplace() {
+    local path="${1:-}"
+    [[ -f "${path}" ]] || return 1
+
+    if config_has_httpmask_object "${path}"; then
+        return 0
+    fi
+    if ! config_has_legacy_httpmask_fields "${path}"; then
+        return 1
+    fi
+
+    local tmp
+    tmp=$(mktemp)
+    if ! jq '
+        .httpmask = {
+            "disable": (.disable_http_mask // false),
+            "mode": ((.http_mask_mode // "legacy") | tostring | if . == "" then "legacy" else . end),
+            "tls": (.http_mask_tls // false),
+            "host": ((.http_mask_host // "") | tostring),
+            "path_root": (((.path_root // .http_mask_path_root // "") | tostring)),
+            "multiplex": ((.http_mask_multiplex // "off") | tostring | if . == "" then "off" else . end)
+        }
+        | del(
+            .disable_http_mask,
+            .http_mask_mode,
+            .http_mask_tls,
+            .http_mask_host,
+            .path_root,
+            .http_mask_path_root,
+            .http_mask_multiplex
+        )
+    ' "${path}" > "${tmp}"; then
+        rm -f "${tmp}"
+        return 1
+    fi
+
+    chmod 600 "${tmp}" >/dev/null 2>&1 || true
+    mv "${tmp}" "${path}"
+    chmod 600 "${path}" >/dev/null 2>&1 || true
+    return 0
 }
 
 update_kernel_only() {
@@ -728,6 +957,28 @@ update_kernel_only() {
 
     VERSION=$(get_latest_version)
     download_binary "$VERSION"
+
+    if [[ -f "${CONFIG_DIR}/config.json" ]]; then
+        info "Validating existing configuration..."
+        local test_output=""
+        if ! test_output=$("${INSTALL_DIR}/sudoku" -c "${CONFIG_DIR}/config.json" -test 2>&1); then
+            warn "Config validation failed; attempting migration for legacy HTTP mask fields..."
+            if migrate_legacy_httpmask_config_inplace "${CONFIG_DIR}/config.json"; then
+                if test_output=$("${INSTALL_DIR}/sudoku" -c "${CONFIG_DIR}/config.json" -test 2>&1); then
+                    success "Config migrated and validated"
+                else
+                    echo "${test_output}" >&2
+                    error "Config remains invalid after migration: ${CONFIG_DIR}/config.json"
+                fi
+            else
+                echo "${test_output}" >&2
+                error "Config validation failed: ${CONFIG_DIR}/config.json"
+            fi
+        else
+            success "Config is valid"
+        fi
+    fi
+
     restart_service_if_present
     refresh_cf_fallback_if_present
     success "Kernel update complete (${VERSION})"
@@ -744,8 +995,16 @@ generate_keypair() {
     local keygen_output
     keygen_output=$("${INSTALL_DIR}/sudoku" -keygen 2>&1)
     
-    AVAILABLE_PRIVATE_KEY=$(echo "$keygen_output" | grep "Available Private Key:" | awk '{print $4}')
-    MASTER_PUBLIC_KEY=$(echo "$keygen_output" | grep "Master Public Key:" | awk '{print $4}')
+    AVAILABLE_PRIVATE_KEY=$(
+        printf '%s\n' "$keygen_output" \
+            | sed -n 's/.*Available Private Key:[[:space:]]*\\([0-9a-fA-F][0-9a-fA-F]*\\).*/\\1/p' \
+            | head -n 1
+    )
+    MASTER_PUBLIC_KEY=$(
+        printf '%s\n' "$keygen_output" \
+            | sed -n 's/.*Master Public Key:[[:space:]]*\\([0-9a-fA-F][0-9a-fA-F]*\\).*/\\1/p' \
+            | head -n 1
+    )
     
     if [[ -z "$AVAILABLE_PRIVATE_KEY" || -z "$MASTER_PUBLIC_KEY" ]]; then
         error "Failed to generate keypair"
