@@ -261,10 +261,6 @@ sudo SUDOKU_HTTP_MASK_PATH_ROOT=aabbcc bash -c "$(curl -fsSL https://raw.githubu
 ### 卸载
 
 ```bash
-# 如果你本地保存了脚本文件（install.sh）
-sudo bash ./install.sh --uninstall
-
-# 如果你没有保存脚本文件（推荐，直接从 GitHub 执行）
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)" -- --uninstall
 ```
 
@@ -611,10 +607,6 @@ sudo SUDOKU_HTTP_MASK_PATH_ROOT=aabbcc bash -c "$(curl -fsSL https://raw.githubu
 ### Uninstall
 
 ```bash
-# If you saved the script locally (install.sh)
-sudo bash ./install.sh --uninstall
-
-# If you did NOT save the script (Recommended: run from GitHub)
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)" -- --uninstall
 ```
 
