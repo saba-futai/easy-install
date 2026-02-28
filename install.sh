@@ -5,6 +5,8 @@
 #
 # Usage:
 #   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
+# Uninstall:
+#   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)" -- --uninstall
 #
 # Environment Variables:
 #   SUDOKU_PORT      - Server port (default: 10233)
@@ -1490,6 +1492,10 @@ print_results() {
     echo -e "${CYAN}${BOLD}📂 Configuration:${NC}"
     echo -e "  Config file: ${YELLOW}${CONFIG_DIR}/config.json${NC}"
     echo -e "  Binary:      ${YELLOW}${INSTALL_DIR}/sudoku${NC}"
+    echo ""
+
+    echo -e "${CYAN}${BOLD}🧹 Uninstall:${NC}"
+    echo -e "  ${YELLOW}sudo bash -c \"$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)\" -- --uninstall${NC}"
     echo ""
 }
 
