@@ -17,134 +17,45 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-i
 
 ## 💻 客户端配置
 
-服务端部署完成后，脚本会输出 **短链接** 和 **Clash 配置**。下面介绍如何在 Windows 和 macOS 上使用官方 Sudoku 客户端。
+服务端部署完成后，脚本会输出 **短链接** 和 **Clash 配置**。桌面端（Windows/macOS/Linux）请统一使用官方 GUI 客户端：[`sudoku-desktop`](https://github.com/SUDOKU-ASCII/sudoku-desktop)。
 
-### Windows 客户端
+### 桌面 GUI 客户端（Windows / macOS / Linux）
 
-#### 1. 下载客户端
+#### 1. 下载并安装
 
-从 [GitHub Releases](https://github.com/SUDOKU-ASCII/sudoku/releases) 下载 `sudoku-windows-amd64.zip`，解压获得 `sudoku.exe`。
+从 [`sudoku-desktop` Releases](https://github.com/SUDOKU-ASCII/sudoku-desktop/releases) 下载对应系统包：
+- Windows: `sudoku4x4_*_windows-amd64.zip`
+- macOS Intel: `sudoku4x4_*_darwin-amd64.dmg`
+- macOS Apple Silicon: `sudoku4x4_*_darwin-arm64.dmg`
+- Linux: `sudoku4x4_*_linux-amd64.tar.gz`
 
-#### 2. 启动客户端
+> 当前桌面端首发版本为 `v0.0.1`（2026-03-03 发布）。
 
-打开 **命令提示符 (cmd)** 或 **PowerShell**，运行：
+#### 2. 导入短链接
 
-```cmd
-# 使用短链接启动（推荐）
-sudoku.exe -link "sudoku://你的短链接..."
+1. 打开客户端，进入 **节点 (Nodes)** 页面
+2. 点击 **新增节点 (Add Node)**
+3. 在 **短链接快速导入** 区域粘贴 `sudoku://...`
+4. 点击 **解析短链接**（或直接用 **剪贴板一键识别**）
+5. 点击 **保存**
 
-# 或使用配置文件启动
-sudoku.exe -c client.json
-```
+#### 3. 启动代理
 
-客户端默认监听 `127.0.0.1:10233`（SOCKS5 + HTTP 混合代理）。
+1. 选择刚导入的节点并点击 **使用**
+2. 在总览页点击 **启动**
+3. 客户端会负责代理启停（托盘菜单也可 **Start Proxy / Stop Proxy**）
 
-#### 3. 配置系统代理
+默认本地端口仍为 `127.0.0.1:10233`（如你未在节点里修改 `localPort`）。
 
-**方法一：命令行设置（CMD 管理员权限）**
+#### 4. 平台说明
 
-```cmd
-:: 开启代理
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyEnable /t REG_DWORD /d 1 /f
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyServer /t REG_SZ /d "127.0.0.1:10233" /f
-
-:: 关闭代理
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyEnable /t REG_DWORD /d 0 /f
-```
-
-**方法二：PowerShell**
-
-```powershell
-# 开启代理
-Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -Value 1
-Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyServer -Value "127.0.0.1:10233"
-
-# 关闭代理
-Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -Value 0
-```
-
-**方法三：图形界面**
-
-1. 打开 **设置** → **网络和 Internet** → **代理**
-2. 关闭「自动检测设置」
-3. 在「手动设置代理」下，打开开关
-4. 填入：
-   - 地址：`127.0.0.1`
-   - 端口：`10233`
-5. 点击「保存」
-
-> 💡 **提示**：部分应用（如终端、游戏）不走系统代理，需单独配置 SOCKS5 代理或使用 Proxifier 等工具。
-
----
-
-### macOS 客户端
-
-#### 1. 下载客户端
-
-从 [GitHub Releases](https://github.com/SUDOKU-ASCII/sudoku/releases) 下载对应版本：
-- Intel Mac: `sudoku-darwin-amd64.tar.gz`
-- Apple Silicon: `sudoku-darwin-arm64.tar.gz`
-
-解压后赋予执行权限：
-```bash
-chmod +x sudoku
-```
-
-#### 2. 启动客户端
-
-```bash
-# 使用短链接启动（推荐）
-./sudoku -link "sudoku://你的短链接..."
-
-# 或使用配置文件启动
-./sudoku -c client.json
-```
-
-客户端默认监听 `127.0.0.1:10233`（SOCKS5 + HTTP 混合代理）。
-
-#### 3. 配置系统代理
-
-**方法一：终端命令行**
-
-```bash
-# 获取当前网络服务名称（通常是 "Wi-Fi" 或 "Ethernet"）
-networksetup -listallnetworkservices
-
-# 设置 SOCKS5 代理 (以 Wi-Fi 为例)
-sudo networksetup -setsocksfirewallproxy "Wi-Fi" 127.0.0.1 10233
-sudo networksetup -setsocksfirewallproxystate "Wi-Fi" on
-
-# 设置 HTTP 代理
-sudo networksetup -setwebproxy "Wi-Fi" 127.0.0.1 10233
-sudo networksetup -setwebproxystate "Wi-Fi" on
-
-# 设置 HTTPS 代理
-sudo networksetup -setsecurewebproxy "Wi-Fi" 127.0.0.1 10233
-sudo networksetup -setsecurewebproxystate "Wi-Fi" on
-
-# 关闭所有代理
-sudo networksetup -setsocksfirewallproxystate "Wi-Fi" off
-sudo networksetup -setwebproxystate "Wi-Fi" off
-sudo networksetup -setsecurewebproxystate "Wi-Fi" off
-```
-
-**方法二：图形界面**
-
-1. 打开 **系统设置**（或系统偏好设置）
-2. 点击 **网络** → 选择当前连接（如 Wi-Fi）
-3. 点击 **详细信息...** → **代理**
-4. 勾选以下选项并填入配置：
-   - ✅ **网页代理 (HTTP)**：`127.0.0.1` 端口 `10233`
-   - ✅ **安全网页代理 (HTTPS)**：`127.0.0.1` 端口 `10233`
-   - ✅ **SOCKS 代理**：`127.0.0.1` 端口 `10233`
-5. 点击「好」保存
-
-> 💡 **提示**：终端应用默认不走系统代理，需要设置环境变量：
-> ```bash
-> export http_proxy=http://127.0.0.1:10233
-> export https_proxy=http://127.0.0.1:10233
-> export all_proxy=socks5://127.0.0.1:10233
-> ```
+- macOS：首次打开若被拦截，先执行以下命令清理隔离属性后再打开：
+  ```bash
+  xattr -cr "/Applications/sudoku4x4.app"
+  ```
+- macOS：启用/停止 `TUN` 时系统可能弹密码框，这是正常行为。
+- Windows / Linux：`v0.0.1` 发布说明提示 `TUN` 可能不可用，但系统代理模式可用。
+- Linux：若桌面环境不支持系统代理自动切换，请手动将代理指向 `127.0.0.1:10233`。
 
 ---
 
@@ -280,10 +191,8 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-i
 sudoku://eyJoIjoiMS4yLjMuNCIsInAiOjEwMjMzLC...
 ```
 
-客户端直接使用：
-```bash
-./sudoku -link "sudoku://..."
-```
+客户端使用方式：
+在桌面 GUI 客户端里导入该 `sudoku://...` 短链接即可（见上方「桌面 GUI 客户端」步骤）。
 
 ### 2. Clash/Mihomo 节点配置
 
@@ -367,134 +276,45 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-i
 
 ## 💻 Client Configuration
 
-After server deployment, the script outputs a **short link** and **Clash config**. Below is how to use the official Sudoku client on Windows and macOS.
+After server deployment, the script outputs a **short link** and **Clash config**. For desktop use (Windows/macOS/Linux), use the official GUI client: [`sudoku-desktop`](https://github.com/SUDOKU-ASCII/sudoku-desktop).
 
-### Windows Client
+### Desktop GUI Client (Windows / macOS / Linux)
 
-#### 1. Download
+#### 1. Download and Install
 
-Download `sudoku-windows-amd64.zip` from [GitHub Releases](https://github.com/SUDOKU-ASCII/sudoku/releases) and extract `sudoku.exe`.
+Download your package from [`sudoku-desktop` Releases](https://github.com/SUDOKU-ASCII/sudoku-desktop/releases):
+- Windows: `sudoku4x4_*_windows-amd64.zip`
+- macOS Intel: `sudoku4x4_*_darwin-amd64.dmg`
+- macOS Apple Silicon: `sudoku4x4_*_darwin-arm64.dmg`
+- Linux: `sudoku4x4_*_linux-amd64.tar.gz`
 
-#### 2. Start Client
+> Current first desktop release: `v0.0.1` (published on 2026-03-03).
 
-Open **Command Prompt** or **PowerShell**:
+#### 2. Import Short Link
 
-```cmd
-# Start with short link (recommended)
-sudoku.exe -link "sudoku://your-short-link..."
+1. Open the app and go to **Nodes**
+2. Click **Add Node**
+3. Paste `sudoku://...` in **Quick short link import**
+4. Click **Parse short link** (or use **Parse from clipboard**)
+5. Click **Save**
 
-# Or use config file
-sudoku.exe -c client.json
-```
+#### 3. Start Proxy
 
-Client listens on `127.0.0.1:10233` (SOCKS5 + HTTP mixed proxy).
+1. Select the imported node and click **Use**
+2. Click **Start** in Dashboard
+3. You can also use tray menu **Start Proxy / Stop Proxy**
 
-#### 3. Configure System Proxy
+Default local endpoint is still `127.0.0.1:10233` (unless you changed `localPort`).
 
-**Option 1: Command Line (Admin CMD)**
+#### 4. Platform Notes
 
-```cmd
-:: Enable proxy
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyEnable /t REG_DWORD /d 1 /f
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyServer /t REG_SZ /d "127.0.0.1:10233" /f
-
-:: Disable proxy
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyEnable /t REG_DWORD /d 0 /f
-```
-
-**Option 2: PowerShell**
-
-```powershell
-# Enable proxy
-Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -Value 1
-Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyServer -Value "127.0.0.1:10233"
-
-# Disable proxy
-Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -Value 0
-```
-
-**Option 3: GUI**
-
-1. Open **Settings** → **Network & Internet** → **Proxy**
-2. Turn off "Automatically detect settings"
-3. Under "Manual proxy setup", turn on the toggle
-4. Enter:
-   - Address: `127.0.0.1`
-   - Port: `10233`
-5. Click "Save"
-
-> 💡 **Note**: Some apps (terminals, games) don't use system proxy. Use Proxifier or configure SOCKS5 directly.
-
----
-
-### macOS Client
-
-#### 1. Download
-
-Download from [GitHub Releases](https://github.com/SUDOKU-ASCII/sudoku/releases):
-- Intel Mac: `sudoku-darwin-amd64.tar.gz`
-- Apple Silicon: `sudoku-darwin-arm64.tar.gz`
-
-Extract and make executable:
-```bash
-chmod +x sudoku
-```
-
-#### 2. Start Client
-
-```bash
-# Start with short link (recommended)
-./sudoku -link "sudoku://your-short-link..."
-
-# Or use config file
-./sudoku -c client.json
-```
-
-Client listens on `127.0.0.1:10233` (SOCKS5 + HTTP mixed proxy).
-
-#### 3. Configure System Proxy
-
-**Option 1: Terminal**
-
-```bash
-# List network services
-networksetup -listallnetworkservices
-
-# Set SOCKS5 proxy (using Wi-Fi as example)
-sudo networksetup -setsocksfirewallproxy "Wi-Fi" 127.0.0.1 10233
-sudo networksetup -setsocksfirewallproxystate "Wi-Fi" on
-
-# Set HTTP proxy
-sudo networksetup -setwebproxy "Wi-Fi" 127.0.0.1 10233
-sudo networksetup -setwebproxystate "Wi-Fi" on
-
-# Set HTTPS proxy
-sudo networksetup -setsecurewebproxy "Wi-Fi" 127.0.0.1 10233
-sudo networksetup -setsecurewebproxystate "Wi-Fi" on
-
-# Disable all proxies
-sudo networksetup -setsocksfirewallproxystate "Wi-Fi" off
-sudo networksetup -setwebproxystate "Wi-Fi" off
-sudo networksetup -setsecurewebproxystate "Wi-Fi" off
-```
-
-**Option 2: GUI**
-
-1. Open **System Settings** (or System Preferences)
-2. Click **Network** → Select current connection (e.g., Wi-Fi)
-3. Click **Details...** → **Proxies**
-4. Enable and configure:
-   - ✅ **Web Proxy (HTTP)**: `127.0.0.1` port `10233`
-   - ✅ **Secure Web Proxy (HTTPS)**: `127.0.0.1` port `10233`
-   - ✅ **SOCKS Proxy**: `127.0.0.1` port `10233`
-5. Click "OK"
-
-> 💡 **Note**: Terminal apps don't use system proxy. Set environment variables:
-> ```bash
-> export http_proxy=http://127.0.0.1:10233
-> export https_proxy=http://127.0.0.1:10233
-> export all_proxy=socks5://127.0.0.1:10233
-> ```
+- macOS: if app launch is blocked on first run, clear quarantine then open again:
+  ```bash
+  xattr -cr "/Applications/sudoku4x4.app"
+  ```
+- macOS: starting/stopping `TUN` may trigger a password prompt; this is expected.
+- Windows / Linux: release note for `v0.0.1` says `TUN` may be unavailable, but system-proxy mode works.
+- Linux: if your desktop environment does not support auto system-proxy changes, set proxy manually to `127.0.0.1:10233`.
 
 ---
 
@@ -626,10 +446,8 @@ After installation, the script outputs:
 sudoku://eyJoIjoiMS4yLjMuNCIsInAiOjEwMjMzLC...
 ```
 
-Use with client:
-```bash
-./sudoku -link "sudoku://..."
-```
+Client usage:
+Import this `sudoku://...` short link in the desktop GUI client (see "Desktop GUI Client" above).
 
 ### 2. Clash/Mihomo Node Config
 
