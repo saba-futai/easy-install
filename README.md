@@ -29,7 +29,6 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-i
 - macOS Apple Silicon: `sudoku4x4_*_darwin-arm64.dmg`
 - Linux: `sudoku4x4_*_linux-amd64.tar.gz`
 
-> 当前桌面端首发版本为 `v0.0.1`（2026-03-03 发布）。
 
 #### 2. 导入短链接
 
@@ -54,7 +53,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-i
   xattr -cr "/Applications/sudoku4x4.app"
   ```
 - macOS：启用/停止 `TUN` 时系统可能弹密码框，这是正常行为。
-- Windows / Linux：`v0.0.1` 发布说明提示 `TUN` 可能不可用，但系统代理模式可用。
+- Windows / Linux：`TUN` 可能不可用，但关闭TUN时系统代理模式正常可用。
 - Linux：若桌面环境不支持系统代理自动切换，请手动将代理指向 `127.0.0.1:10233`。
 
 ---
@@ -288,7 +287,6 @@ Download your package from [`sudoku-desktop` Releases](https://github.com/SUDOKU
 - macOS Apple Silicon: `sudoku4x4_*_darwin-arm64.dmg`
 - Linux: `sudoku4x4_*_linux-amd64.tar.gz`
 
-> Current first desktop release: `v0.0.1` (published on 2026-03-03).
 
 #### 2. Import Short Link
 
