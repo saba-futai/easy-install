@@ -53,8 +53,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-i
   xattr -cr "/Applications/sudoku4x4.app"
   ```
 - macOS：启用/停止 `TUN` 时系统可能弹密码框，这是正常行为。
-- Windows / Linux：`TUN` 可能不可用，但关闭TUN时系统代理模式正常可用。
-- Linux：若桌面环境不支持系统代理自动切换，请手动将代理指向 `127.0.0.1:10233`。
+- Linux：`TUN` 可能不可用，但关闭TUN时自动启动系统代理模式正常可用。
 
 ---
 
@@ -86,14 +85,6 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-i
 4. 系统会自动从剪贴板读取内容
 5. 点击 **「Import Short Link」** 完成导入
 
-**方法三：手动配置**
-
-如果不使用短链接，也可以在「Add node」对话框中手动填写：
-- **Display name**：节点名称（可选）
-- **Server host**：服务器 IP/域名
-- **Port**：服务器端口（默认 10233）
-- **Key**：私钥（Available Private Key）
-- 其他选项按需配置
 
 #### 3. 连接 VPN
 
@@ -101,16 +92,6 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-i
 2. 点击顶部 **「Start VPN」** 按钮
 3. 首次连接会请求 VPN 权限，点击「确定」授权
 4. 连接成功后，状态栏会显示 VPN 图标
-
-#### 4. 其他功能
-
-| 功能 | 说明 |
-|------|------|
-| **测速 (Ping)** | 点击节点卡片的 🔄 刷新图标测试延迟 |
-| **复制短链接** | 点击 🔗 链接图标可复制当前节点的短链接 |
-| **编辑节点** | 点击 ✏️ 编辑图标修改配置 |
-| **删除节点** | 点击 🗑️ 删除图标移除节点 |
-| **切换节点** | VPN 运行时点击其他节点可热切换 |
 
 ---
 
@@ -311,8 +292,7 @@ Default local endpoint is still `127.0.0.1:10233` (unless you changed `localPort
   xattr -cr "/Applications/sudoku4x4.app"
   ```
 - macOS: starting/stopping `TUN` may trigger a password prompt; this is expected.
-- Windows / Linux: release note for `v0.0.1` says `TUN` may be unavailable, but system-proxy mode works.
-- Linux: if your desktop environment does not support auto system-proxy changes, set proxy manually to `127.0.0.1:10233`.
+- Linux: `TUN` may be unavailable, but system-proxy mode works.
 
 ---
 
@@ -342,14 +322,6 @@ Open Sudodroid and import nodes using one of these methods:
 4. The link will be read from clipboard automatically
 5. Tap **"Import Short Link"** to complete
 
-**Option 3: Manual Configuration**
-
-You can also fill in the fields manually in the "Add node" dialog:
-- **Display name**: Node name (optional)
-- **Server host**: Server IP/domain
-- **Port**: Server port (default 10233)
-- **Key**: Private key (Available Private Key)
-- Configure other options as needed
 
 #### 3. Connect VPN
 
@@ -358,15 +330,6 @@ You can also fill in the fields manually in the "Add node" dialog:
 3. Grant VPN permission when prompted (first time only)
 4. VPN icon appears in status bar when connected
 
-#### 4. Other Features
-
-| Feature | Description |
-|---------|-------------|
-| **Ping** | Tap 🔄 refresh icon to test latency |
-| **Copy Link** | Tap 🔗 link icon to copy node's short link |
-| **Edit** | Tap ✏️ edit icon to modify settings |
-| **Delete** | Tap 🗑️ delete icon to remove node |
-| **Switch Node** | Tap another node while VPN is running to hot-switch |
 
 ---
 
