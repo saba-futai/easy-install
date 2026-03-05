@@ -52,8 +52,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-i
   ```bash
   xattr -cr "/Applications/sudoku4x4.app"
   ```
-- macOS：启用/停止 `TUN` 时系统可能弹密码框，这是正常行为。
-- Linux：`TUN` 可能不可用，但关闭TUN时自动启动系统代理模式正常可用。
+- macOS / Linux：启用/停止 `TUN` 时系统可能弹密码框，这是正常行为。
 
 ---
 
@@ -291,8 +290,7 @@ Default local endpoint is still `127.0.0.1:10233` (unless you changed `localPort
   ```bash
   xattr -cr "/Applications/sudoku4x4.app"
   ```
-- macOS: starting/stopping `TUN` may trigger a password prompt; this is expected.
-- Linux: `TUN` may be unavailable, but system-proxy mode works.
+- macOS / Linux: starting/stopping `TUN` may trigger a password prompt; this is expected.
 
 ---
 
