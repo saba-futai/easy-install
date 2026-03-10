@@ -9,7 +9,7 @@
 #   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)" -- --uninstall
 #
 # Environment Variables:
-#   SUDOKU_PORT      - Server port (default: 10233)
+#   SUDOKU_PORT      - Server port (default: random available port in 50001-65535)
 #   SUDOKU_CLIENT_PORT - Client local proxy port used in exported short link (default: 10233)
 #   SUDOKU_FALLBACK  - Fallback address (default: 127.0.0.1:80)
 #   SUDOKU_CF_FALLBACK - Enable CF 500 error page fallback service (default: true)
@@ -32,7 +32,7 @@ set -e
 # Configuration Defaults
 # ═══════════════════════════════════════════════════════════════════════════════
 
-SUDOKU_PORT="${SUDOKU_PORT:-10233}"
+SUDOKU_PORT="${SUDOKU_PORT:-}"
 SUDOKU_CLIENT_PORT="${SUDOKU_CLIENT_PORT:-10233}"
 DEFAULT_SUDOKU_FALLBACK="127.0.0.1:80"
 SUDOKU_FALLBACK="${SUDOKU_FALLBACK:-${DEFAULT_SUDOKU_FALLBACK}}"
@@ -130,6 +130,49 @@ trim_space() {
     printf '%s' "$s"
 }
 
+random_uint32() {
+    local value=""
+    value=$(od -An -N4 -tu4 /dev/urandom 2>/dev/null | tr -d ' ')
+    if [[ -z "${value}" ]]; then
+        value=$RANDOM
+    fi
+    printf '%s' "${value}"
+}
+
+is_tcp_port_in_use() {
+    local port="${1:-}"
+    if ! is_valid_port "${port}"; then
+        return 1
+    fi
+
+    if command -v ss >/dev/null 2>&1; then
+        ss -Hltn 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:|\\])${port}$"
+        return $?
+    fi
+    if command -v netstat >/dev/null 2>&1; then
+        netstat -ltn 2>/dev/null | awk 'NR > 2 {print $4}' | grep -Eq "(^|:|\\])${port}$"
+        return $?
+    fi
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -nP -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1
+        return $?
+    fi
+    return 1
+}
+
+pick_random_high_port() {
+    local port=""
+    local attempt
+    for attempt in $(seq 1 128); do
+        port=$((50001 + ($(random_uint32) % 15535)))
+        if ! is_tcp_port_in_use "${port}"; then
+            printf '%s' "${port}"
+            return 0
+        fi
+    done
+    error "Failed to find an available random port in 50001-65535"
+}
+
 normalize_settings() {
     local http_mask_enabled
     local http_mask_tls
@@ -149,6 +192,11 @@ normalize_settings() {
         error "Invalid SUDOKU_CF_FALLBACK_FORCE=${SUDOKU_CF_FALLBACK_FORCE} (expected true/false)"
     fi
 
+    SUDOKU_PORT=$(trim_space "${SUDOKU_PORT}")
+    if [[ -z "${SUDOKU_PORT}" ]]; then
+        SUDOKU_PORT=$(pick_random_high_port)
+        info "Selected random server port: ${SUDOKU_PORT}"
+    fi
     if ! is_valid_port "${SUDOKU_PORT}"; then
         error "Invalid SUDOKU_PORT=${SUDOKU_PORT} (expected 1-65535)"
     fi
@@ -1241,19 +1289,12 @@ get_public_ip() {
 # X/P/V Custom Table (Sudoku v0.1.4+)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-rand_uint32() {
-    od -An -N4 -tu4 /dev/urandom 2>/dev/null | tr -d ' '
-}
-
 generate_xpv_table() {
     local chars=(x x p p v v v v)
     local i j tmp r
 
     for ((i=${#chars[@]}-1; i>0; i--)); do
-        r=$(rand_uint32)
-        if [[ -z "$r" ]]; then
-            r=$RANDOM
-        fi
+        r=$(random_uint32)
         j=$((r % (i+1)))
         tmp="${chars[i]}"
         chars[i]="${chars[j]}"
@@ -1506,6 +1547,15 @@ print_results() {
 
 uninstall() {
     echo -e "${RED}Uninstalling Sudoku...${NC}"
+    local uninstall_port="${SUDOKU_PORT}"
+
+    if [[ -f "${CONFIG_DIR}/config.json" ]]; then
+        uninstall_port=$(jq -r '.local_port // empty' "${CONFIG_DIR}/config.json" 2>/dev/null || true)
+        uninstall_port=$(trim_space "${uninstall_port}")
+        if ! is_valid_port "${uninstall_port}"; then
+            uninstall_port="${SUDOKU_PORT}"
+        fi
+    fi
     
     systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
     systemctl disable "${SERVICE_NAME}" 2>/dev/null || true
@@ -1523,7 +1573,7 @@ uninstall() {
     
     # Remove firewall rule
     if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
-        ufw delete allow "${SUDOKU_PORT}/tcp" > /dev/null 2>&1 || true
+        ufw delete allow "${uninstall_port}/tcp" > /dev/null 2>&1 || true
     fi
     
     echo -e "${GREEN}Uninstallation complete.${NC}"

@@ -109,7 +109,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-i
 
 | 配置项 | 默认值 |
 |--------|--------|
-| 端口 | `10233` |
+| 端口 | `50001-65535` 内随机可用端口 |
 | 模式 | `prefer_entropy` (低熵模式) |
 | AEAD | `chacha20-poly1305` |
 | 纯 Sudoku 下行 | `false` (带宽优化模式) |
@@ -346,7 +346,7 @@ Open Sudodroid and import nodes using one of these methods:
 
 | Setting | Default |
 |---------|---------|
-| Port | `10233` |
+| Port | Random available port in `50001-65535` |
 | Mode | `prefer_entropy` (low entropy) |
 | AEAD | `chacha20-poly1305` |
 | Pure Sudoku Downlink | `false` (bandwidth optimized) |
