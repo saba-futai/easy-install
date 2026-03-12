@@ -188,7 +188,7 @@ sudoku://eyJoIjoiMS4yLjMuNCIsInAiOjEwMjMzLC...
   custom-table: xpxvvpvv
   table-type: prefer_entropy
 	  http-mask: true
-	  http-mask-mode: auto
+	  http-mask-mode: ws
 	  http-mask-tls: false
 	  http-mask-multiplex: "on"
 	  enable-pure-downlink: false
@@ -423,7 +423,7 @@ Import this `sudoku://...` short link in the desktop GUI client (see "Desktop GU
   custom-table: xpxvvpvv
   table-type: prefer_entropy
 	  http-mask: true
-	  http-mask-mode: auto
+	  http-mask-mode: ws
 	  http-mask-tls: false
 	  http-mask-multiplex: "on"
 	  enable-pure-downlink: false
