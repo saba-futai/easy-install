@@ -33,6 +33,7 @@ set -e
 # ═══════════════════════════════════════════════════════════════════════════════
 
 SUDOKU_PORT="${SUDOKU_PORT:-}"
+SUDOKU_CLIENT_PORT_INPUT="${SUDOKU_CLIENT_PORT:-}"
 SUDOKU_CLIENT_PORT="${SUDOKU_CLIENT_PORT:-10233}"
 DEFAULT_SUDOKU_FALLBACK="127.0.0.1:80"
 SUDOKU_FALLBACK="${SUDOKU_FALLBACK:-${DEFAULT_SUDOKU_FALLBACK}}"
@@ -52,6 +53,7 @@ SUDOKU_HTTP_MASK_HOST="${SUDOKU_HTTP_MASK_HOST:-}"
 SUDOKU_HTTP_MASK_PATH_ROOT="${SUDOKU_HTTP_MASK_PATH_ROOT:-}"
 INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/sudoku"
+EXPORT_STATE_FILE="${CONFIG_DIR}/export-state.env"
 SERVICE_NAME="sudoku"
 FALLBACK_SERVICE_NAME="sudoku-fallback"
 FALLBACK_LIB_DIR="/usr/local/lib/sudoku-fallback"
@@ -1217,7 +1219,108 @@ update_kernel_only() {
     restart_service_if_present
     refresh_cf_fallback_if_present
     success "Kernel update complete (${VERSION})"
-    exit 0
+}
+
+load_export_state() {
+    if [[ ! -f "${EXPORT_STATE_FILE}" ]]; then
+        return 1
+    fi
+
+    # shellcheck disable=SC1090
+    source "${EXPORT_STATE_FILE}"
+
+    if [[ -z "${SUDOKU_CLIENT_PORT_INPUT}" && -n "${EXPORTED_CLIENT_PORT:-}" ]]; then
+        SUDOKU_CLIENT_PORT="${EXPORTED_CLIENT_PORT}"
+    fi
+
+    return 0
+}
+
+persist_export_state() {
+    mkdir -p "${CONFIG_DIR}"
+    cat > "${EXPORT_STATE_FILE}" << EOF
+AVAILABLE_PRIVATE_KEY=$(printf '%q' "${AVAILABLE_PRIVATE_KEY}")
+MASTER_PUBLIC_KEY=$(printf '%q' "${MASTER_PUBLIC_KEY}")
+EXPORTED_CLIENT_PORT=$(printf '%q' "${SUDOKU_CLIENT_PORT}")
+SHORT_LINK=$(printf '%q' "${SHORT_LINK}")
+CLASH_CONFIG=$(printf '%q' "${CLASH_CONFIG}")
+EOF
+    chmod 600 "${EXPORT_STATE_FILE}"
+}
+
+load_existing_config_context() {
+    if [[ ! -f "${CONFIG_DIR}/config.json" ]]; then
+        warn "Existing config not found; cannot rebuild short link or Clash config."
+        return 1
+    fi
+
+    local cfg_port cfg_key cfg_table cfg_disable_httpmask cfg_httpmask_mode cfg_httpmask_tls cfg_httpmask_host cfg_httpmask_path_root cfg_httpmask_multiplex
+    cfg_port=$(jq -r '.local_port // empty' "${CONFIG_DIR}/config.json" 2>/dev/null || true)
+    cfg_key=$(jq -r '.key // empty' "${CONFIG_DIR}/config.json" 2>/dev/null || true)
+    cfg_table=$(jq -r '.custom_table // empty' "${CONFIG_DIR}/config.json" 2>/dev/null || true)
+    cfg_disable_httpmask=$(jq -r '.httpmask.disable // empty' "${CONFIG_DIR}/config.json" 2>/dev/null || true)
+    cfg_httpmask_mode=$(jq -r '.httpmask.mode // empty' "${CONFIG_DIR}/config.json" 2>/dev/null || true)
+    cfg_httpmask_tls=$(jq -r '.httpmask.tls // empty' "${CONFIG_DIR}/config.json" 2>/dev/null || true)
+    cfg_httpmask_host=$(jq -r '.httpmask.host // empty' "${CONFIG_DIR}/config.json" 2>/dev/null || true)
+    cfg_httpmask_path_root=$(jq -r '.httpmask.path_root // empty' "${CONFIG_DIR}/config.json" 2>/dev/null || true)
+    cfg_httpmask_multiplex=$(jq -r '.httpmask.multiplex // empty' "${CONFIG_DIR}/config.json" 2>/dev/null || true)
+
+    cfg_port=$(trim_space "${cfg_port}")
+    cfg_key=$(trim_space "${cfg_key}")
+    cfg_table=$(trim_space "${cfg_table}")
+
+    if is_valid_port "${cfg_port}"; then
+        SUDOKU_PORT="${cfg_port}"
+    fi
+    if [[ -n "${cfg_key}" ]]; then
+        MASTER_PUBLIC_KEY="${cfg_key}"
+    fi
+    if [[ -n "${cfg_table}" && "${cfg_table}" != "null" ]]; then
+        CUSTOM_TABLE="${cfg_table}"
+    fi
+    if [[ -n "${cfg_disable_httpmask}" && "${cfg_disable_httpmask}" != "null" ]]; then
+        DISABLE_HTTP_MASK="${cfg_disable_httpmask}"
+    fi
+    if [[ -n "${cfg_httpmask_mode}" && "${cfg_httpmask_mode}" != "null" ]]; then
+        HTTP_MASK_MODE="${cfg_httpmask_mode}"
+    fi
+    if [[ -n "${cfg_httpmask_tls}" && "${cfg_httpmask_tls}" != "null" ]]; then
+        HTTP_MASK_TLS="${cfg_httpmask_tls}"
+    fi
+    if [[ -n "${cfg_httpmask_host}" && "${cfg_httpmask_host}" != "null" ]]; then
+        HTTP_MASK_HOST="${cfg_httpmask_host}"
+    fi
+    if [[ -n "${cfg_httpmask_path_root}" && "${cfg_httpmask_path_root}" != "null" ]]; then
+        HTTP_MASK_PATH_ROOT="${cfg_httpmask_path_root}"
+    fi
+    if [[ -n "${cfg_httpmask_multiplex}" && "${cfg_httpmask_multiplex}" != "null" ]]; then
+        HTTP_MASK_MULTIPLEX="${cfg_httpmask_multiplex}"
+    fi
+
+    return 0
+}
+
+prepare_existing_install_output() {
+    if ! load_existing_config_context; then
+        return 1
+    fi
+
+    get_public_ip
+
+    if ! load_export_state; then
+        warn "Export state not found at ${EXPORT_STATE_FILE}; cannot reprint short link or Clash config for this older installation."
+        return 1
+    fi
+
+    if [[ -z "${AVAILABLE_PRIVATE_KEY:-}" ]]; then
+        warn "Client export key missing in ${EXPORT_STATE_FILE}; cannot rebuild short link or Clash config."
+        return 1
+    fi
+
+    generate_short_link
+    generate_clash_config
+    persist_export_state
+    return 0
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1533,6 +1636,9 @@ print_results() {
     
     echo -e "${CYAN}${BOLD}📂 Configuration:${NC}"
     echo -e "  Config file: ${YELLOW}${CONFIG_DIR}/config.json${NC}"
+    if [[ -f "${EXPORT_STATE_FILE}" ]]; then
+        echo -e "  Export state: ${YELLOW}${EXPORT_STATE_FILE}${NC}"
+    fi
     echo -e "  Binary:      ${YELLOW}${INSTALL_DIR}/sudoku${NC}"
     echo ""
 
@@ -1607,6 +1713,17 @@ main() {
     # If already installed, only update the binary (do not touch config)
     if has_existing_install; then
         update_kernel_only
+        echo ""
+        if prepare_existing_install_output; then
+            print_results
+        else
+            echo -e "${CYAN}${BOLD}⚙️  Service Management:${NC}"
+            echo -e "  Status:  ${YELLOW}systemctl status ${SERVICE_NAME}${NC}"
+            echo -e "  Restart: ${YELLOW}systemctl restart ${SERVICE_NAME}${NC}"
+            echo -e "  Logs:    ${YELLOW}journalctl -u ${SERVICE_NAME} -f${NC}"
+            echo ""
+        fi
+        exit 0
     fi
 
     # Get latest version and download
@@ -1631,6 +1748,7 @@ main() {
     # Generate output
     generate_short_link
     generate_clash_config
+    persist_export_state
     
     # Display results
     print_results
