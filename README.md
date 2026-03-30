@@ -13,6 +13,8 @@
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
 ```
 
+Cloudflare Worker 入口部署请看：[README.worker.zh-CN.md](./README.worker.zh-CN.md)
+
 ---
 
 ## 💻 客户端配置

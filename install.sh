@@ -19,7 +19,7 @@
 #   SUDOKU_CF_FALLBACK_FORCE - Force override SUDOKU_FALLBACK when CF fallback starts (default: false)
 #   SERVER_IP        - Override public host/IP used in short link & Clash config (default: auto-detect)
 #   SUDOKU_HTTP_MASK - Enable HTTP mask (default: true)
-#   SUDOKU_HTTP_MASK_MODE - HTTP mask mode: auto/stream/poll/legacy/ws (default: ws)
+#   SUDOKU_HTTP_MASK_MODE - HTTP mask mode: auto/stream/poll/legacy/ws (server default: auto; exported client default: ws)
 #   SUDOKU_HTTP_MASK_TLS  - Use HTTPS in HTTP mask tunnel modes (default: false)
 #   SUDOKU_HTTP_MASK_MULTIPLEX - HTTP mask mux: off/auto/on (default: on)
 #   SUDOKU_HTTP_MASK_HOST - Override HTTP Host/SNI in tunnel modes (default: empty)
@@ -46,7 +46,8 @@ SUDOKU_CF_FALLBACK_FORCE="${SUDOKU_CF_FALLBACK_FORCE:-false}"
 SUDOKU_CF_FALLBACK_REPO="${SUDOKU_CF_FALLBACK_REPO:-donlon/cloudflare-error-page}"
 SUDOKU_CF_FALLBACK_BRANCH="${SUDOKU_CF_FALLBACK_BRANCH:-main}"
 SUDOKU_HTTP_MASK="${SUDOKU_HTTP_MASK:-true}"
-SUDOKU_HTTP_MASK_MODE="${SUDOKU_HTTP_MASK_MODE:-ws}"
+SUDOKU_HTTP_MASK_MODE_INPUT="${SUDOKU_HTTP_MASK_MODE-}"
+SUDOKU_HTTP_MASK_MODE="${SUDOKU_HTTP_MASK_MODE:-auto}"
 SUDOKU_HTTP_MASK_TLS="${SUDOKU_HTTP_MASK_TLS:-false}"
 SUDOKU_HTTP_MASK_MULTIPLEX="${SUDOKU_HTTP_MASK_MULTIPLEX:-on}"
 SUDOKU_HTTP_MASK_HOST="${SUDOKU_HTTP_MASK_HOST:-}"
@@ -59,7 +60,8 @@ FALLBACK_SERVICE_NAME="sudoku-fallback"
 FALLBACK_LIB_DIR="/usr/local/lib/sudoku-fallback"
 CUSTOM_TABLE=""
 DISABLE_HTTP_MASK="false"
-HTTP_MASK_MODE="ws"
+HTTP_MASK_MODE="auto"
+CLIENT_HTTP_MASK_MODE="ws"
 HTTP_MASK_TLS="false"
 HTTP_MASK_MULTIPLEX="on"
 HTTP_MASK_HOST=""
@@ -226,12 +228,17 @@ normalize_settings() {
     HTTP_MASK_MODE=$(trim_space "${SUDOKU_HTTP_MASK_MODE}")
     HTTP_MASK_MODE=$(echo "${HTTP_MASK_MODE}" | tr '[:upper:]' '[:lower:]')
     if [[ -z "${HTTP_MASK_MODE}" ]]; then
-        HTTP_MASK_MODE="ws"
+        HTTP_MASK_MODE="auto"
     fi
     case "${HTTP_MASK_MODE}" in
         auto|stream|poll|legacy|ws) ;;
         *) error "Invalid SUDOKU_HTTP_MASK_MODE=${SUDOKU_HTTP_MASK_MODE} (expected auto/stream/poll/legacy/ws)" ;;
     esac
+
+    CLIENT_HTTP_MASK_MODE="${HTTP_MASK_MODE}"
+    if [[ -z "$(trim_space "${SUDOKU_HTTP_MASK_MODE_INPUT}")" ]]; then
+        CLIENT_HTTP_MASK_MODE="ws"
+    fi
 
     HTTP_MASK_HOST=$(trim_space "${SUDOKU_HTTP_MASK_HOST}")
     HTTP_MASK_TLS="${http_mask_tls}"
@@ -1540,7 +1547,7 @@ generate_short_link() {
   "enable_pure_downlink": false,
   "httpmask": {
     "disable": ${DISABLE_HTTP_MASK},
-    "mode": "${HTTP_MASK_MODE}",
+    "mode": "${CLIENT_HTTP_MASK_MODE}",
     "tls": ${HTTP_MASK_TLS},
     "host": "${HTTP_MASK_HOST}",
     "path_root": "${HTTP_MASK_PATH_ROOT}",
@@ -1590,7 +1597,7 @@ generate_clash_config() {
     lines+=(
         "  table-type: prefer_entropy"
         "  http-mask: ${http_mask_yaml}"
-        "  http-mask-mode: ${HTTP_MASK_MODE}"
+        "  http-mask-mode: ${CLIENT_HTTP_MASK_MODE}"
         "  http-mask-tls: ${HTTP_MASK_TLS}"
         "  http-mask-multiplex: \"${HTTP_MASK_MULTIPLEX}\""
     )
