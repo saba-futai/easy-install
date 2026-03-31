@@ -1,7 +1,7 @@
 import { connect } from "cloudflare:sockets";
 
 import { buildClientConfig, buildClashNode, buildShortLinkFromClientConfig, buildWSPath, resolvePathRoot } from "./sudoku-config.mjs";
-import { filterPreferredEntries, loadPreferredIpPool, normalizePreferredIpStrategy, parsePreferredIpList, pickPreferredEntry } from "./preferred-ip.mjs";
+import { CFNEW_DEFAULT_PREFERRED_ENTRIES, filterPreferredEntries, loadPreferredIpPool, normalizePreferredIpStrategy, parsePreferredIpList, pickPreferredEntry } from "./preferred-ip.mjs";
 import { PackedDownlinkEncoder } from "./sudoku-packed.mjs";
 import {
   ByteQueue,
@@ -49,6 +49,36 @@ function normalizeMultiplexMode(value) {
   if (!raw || raw === "off") return "off";
   if (raw === "auto" || raw === "on") return raw;
   throw new Error(`invalid multiplex mode: ${value}`);
+}
+
+function detectPreferredRegion(request) {
+  const country = String(request.cf?.country || request.headers.get("cf-ipcountry") || "").trim().toUpperCase();
+  const countryToRegion = {
+    US: "US",
+    SG: "SG",
+    JP: "JP",
+    KR: "KR",
+    DE: "DE",
+    SE: "SE",
+    NL: "NL",
+    FI: "FI",
+    GB: "GB",
+    CN: "SG",
+    TW: "JP",
+    AU: "SG",
+    CA: "US",
+    FR: "DE",
+    IT: "DE",
+    ES: "DE",
+    CH: "DE",
+    AT: "DE",
+    BE: "NL",
+    DK: "SE",
+    NO: "SE",
+    IE: "GB",
+    HK: "HK",
+  };
+  return countryToRegion[country] || "";
 }
 
 async function loadSettings(env, requestUrl) {
@@ -118,13 +148,15 @@ async function resolveExportBundle(settings, request) {
     cacheTtlMs: settings.preferredIpCacheMs,
     kv: settings.preferredKv,
     kvKey: settings.preferredKvKey,
+    defaultEntries: CFNEW_DEFAULT_PREFERRED_ENTRIES,
   });
+  const effectiveRegion = settings.preferredRegion || detectPreferredRegion(request);
   const eligibleEntries = settings.disablePreferred
     ? []
     : filterPreferredEntries(preferredPool.entries, {
         enableIPs: settings.enablePreferredIPs,
         enableDomains: settings.enablePreferredDomains,
-        region: settings.preferredRegion,
+        region: effectiveRegion,
       });
   const selectedPreferred = pickPreferredEntry(
     eligibleEntries,
@@ -152,11 +184,12 @@ async function resolveExportBundle(settings, request) {
     preferredTotalCount: preferredPool.entries.length,
     preferredSource: preferredPool.preferredSource,
     preferredError: preferredPool.preferredError,
+    effectiveRegion,
   };
 }
 
 function renderPage(settings, requestUrl, exportBundle) {
-  const { clientConfig, clashNode, shortLink, selectedPreferred, preferredCount, preferredTotalCount, preferredSource, preferredError } = exportBundle;
+  const { clientConfig, clashNode, shortLink, selectedPreferred, preferredCount, preferredTotalCount, preferredSource, preferredError, effectiveRegion } = exportBundle;
   const clientJson = JSON.stringify(clientConfig, null, 2);
   const url = new URL(requestUrl);
   const base = configBase(url.origin, settings.manageToken);
@@ -166,7 +199,7 @@ function renderPage(settings, requestUrl, exportBundle) {
     ? `当前导出节点使用优选入口 <code>${htmlEscape(exportTarget)}</code>，并自动把 <code>Host/SNI</code> 设为 <code>${htmlEscape(clientConfig.httpmask.host || settings.publicHost)}</code>。`
     : "当前导出节点直接使用你的域名作为入口。";
   const preferredMeta = preferredCount > 0
-    ? `优选池可用 ${preferredCount} 条 / 总计 ${preferredTotalCount} 条，策略 <code>${htmlEscape(settings.preferredIpStrategy)}</code>${settings.preferredRegion ? `，地区过滤 <code>${htmlEscape(settings.preferredRegion)}</code>` : ""}${preferredSource ? `，来源 <code>${htmlEscape(preferredSource)}</code>` : ""}。`
+    ? `优选池可用 ${preferredCount} 条 / 总计 ${preferredTotalCount} 条，策略 <code>${htmlEscape(settings.preferredIpStrategy)}</code>${effectiveRegion ? `，地区过滤 <code>${htmlEscape(effectiveRegion)}</code>` : ""}${preferredSource ? `，来源 <code>${htmlEscape(preferredSource)}</code>` : ""}。`
     : preferredError
       ? `优选池不可用，已回退到域名直连。错误：<code>${htmlEscape(preferredError)}</code>`
       : "未配置优选 IP，当前为域名直连导出。";

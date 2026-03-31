@@ -1,6 +1,43 @@
 import { joinHostPort, splitHostPort } from "./sudoku-protocol.mjs";
 
 const remoteCache = new Map();
+const CFNEW_DEFAULT_PREFERRED_RAW = `
+ProxyIP.HK.CMLiussss.net:443#HK
+ProxyIP.US.CMLiussss.net:443#US
+ProxyIP.SG.CMLiussss.net:443#SG
+ProxyIP.JP.CMLiussss.net:443#JP
+ProxyIP.KR.CMLiussss.net:443#KR
+ProxyIP.DE.CMLiussss.net:443#DE
+ProxyIP.SE.CMLiussss.net:443#SE
+ProxyIP.NL.CMLiussss.net:443#NL
+ProxyIP.FI.CMLiussss.net:443#FI
+ProxyIP.GB.CMLiussss.net:443#GB
+ProxyIP.Oracle.cmliussss.net:443#Oracle
+ProxyIP.DigitalOcean.CMLiussss.net:443#DigitalOcean
+ProxyIP.Vultr.CMLiussss.net:443#Vultr
+ProxyIP.Multacom.CMLiussss.net:443#Multacom
+cloudflare.182682.xyz:443#CF
+speed.marisalnc.com:443#CF
+freeyx.cloudflare88.eu.org:443#CF
+bestcf.top:443#CF
+cdn.2020111.xyz:443#CF
+cfip.cfcdn.vip:443#CF
+cf.0sm.com:443#CF
+cf.090227.xyz:443#CF
+cf.zhetengsha.eu.org:443#CF
+cloudflare.9jy.cc:443#CF
+cf.zerone-cdn.pp.ua:443#CF
+cfip.1323123.xyz:443#CF
+cnamefuckxxs.yuchen.icu:443#CF
+cloudflare-ip.mofashi.ltd:443#CF
+115155.xyz:443#CF
+cname.xirancdn.us:443#CF
+f3058171cad.002404.xyz:443#CF
+8.889288.xyz:443#CF
+cdn.tzpro.xyz:443#CF
+cf.877771.xyz:443#CF
+xn--b6gac.eu.org:443#CF
+`.trim();
 
 function uniqByAddress(entries) {
   const seen = new Set();
@@ -150,6 +187,8 @@ export function parsePreferredIpList(input, defaultPort = 443) {
   return uniqByAddress(entries);
 }
 
+export const CFNEW_DEFAULT_PREFERRED_ENTRIES = parsePreferredIpList(CFNEW_DEFAULT_PREFERRED_RAW, 443);
+
 export function isLiteralIpHost(host) {
   const raw = String(host || "").trim();
   return /^(\d{1,3}\.){3}\d{1,3}$/.test(raw) || raw.includes(":");
@@ -192,8 +231,9 @@ async function loadFromRemoteUrl(source, defaultPort, cacheTtlMs) {
   return result;
 }
 
-export async function loadPreferredIpPool({ inlineList = "", sourceUrl = "", defaultPort = 443, cacheTtlMs = 0, kv = null, kvKey = "" }) {
+export async function loadPreferredIpPool({ inlineList = "", sourceUrl = "", defaultPort = 443, cacheTtlMs = 0, kv = null, kvKey = "", defaultEntries = [] }) {
   const inlineEntries = parsePreferredIpList(inlineList, defaultPort);
+  const builtInEntries = Array.isArray(defaultEntries) ? defaultEntries : [];
   let kvEntries = [];
   const kvStorageKey = String(kvKey || "").trim();
   if (kv && kvStorageKey) {
@@ -203,9 +243,9 @@ export async function loadPreferredIpPool({ inlineList = "", sourceUrl = "", def
   }
   const source = String(sourceUrl || "").trim();
   if (!source) {
-    return {
-      entries: uniqByAddress([...kvEntries, ...inlineEntries]),
-      preferredSource: kvEntries.length > 0 ? "kv" : inlineEntries.length > 0 ? "inline" : "",
+      return {
+      entries: uniqByAddress([...kvEntries, ...inlineEntries, ...builtInEntries]),
+      preferredSource: kvEntries.length > 0 ? "kv" : inlineEntries.length > 0 ? "inline" : builtInEntries.length > 0 ? "cfnew-default" : "",
       preferredError: "",
     };
   }
@@ -213,14 +253,14 @@ export async function loadPreferredIpPool({ inlineList = "", sourceUrl = "", def
   try {
     const { entries: remoteEntries } = await loadFromRemoteUrl(source, defaultPort, cacheTtlMs);
     return {
-      entries: uniqByAddress([...remoteEntries, ...kvEntries, ...inlineEntries]),
+      entries: uniqByAddress([...remoteEntries, ...kvEntries, ...inlineEntries, ...builtInEntries]),
       preferredSource: remoteEntries.length > 0 ? source : kvEntries.length > 0 ? "kv" : inlineEntries.length > 0 ? "inline" : "",
-      preferredError: remoteEntries.length > 0 || kvEntries.length > 0 || inlineEntries.length > 0 ? "" : "preferred IP source returned no usable entries",
+      preferredError: remoteEntries.length > 0 || kvEntries.length > 0 || inlineEntries.length > 0 || builtInEntries.length > 0 ? "" : "preferred IP source returned no usable entries",
     };
   } catch (error) {
     return {
-      entries: uniqByAddress([...kvEntries, ...inlineEntries]),
-      preferredSource: kvEntries.length > 0 ? "kv" : inlineEntries.length > 0 ? "inline" : "",
+      entries: uniqByAddress([...kvEntries, ...inlineEntries, ...builtInEntries]),
+      preferredSource: kvEntries.length > 0 ? "kv" : inlineEntries.length > 0 ? "inline" : builtInEntries.length > 0 ? "cfnew-default" : "",
       preferredError: error instanceof Error ? error.message : String(error),
     };
   }
