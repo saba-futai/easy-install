@@ -47,8 +47,9 @@ export function buildWSPath(pathRoot) {
 export function buildClientConfig(options) {
   const serverAddress = options.serverAddress ? normalizeServerAddress(options.serverAddress, 443) : joinHostPort(options.publicHost, 443);
   const asciiMode = normalizeAsciiMode(options.ascii || "prefer_entropy");
+  const aead = String(options.aead || "none").trim() || "none";
   const pureDownlink = options.enablePureDownlink === true;
-  const multiplex = normalizeMultiplexMode(options.httpMaskMultiplex || "on");
+  const multiplex = normalizeMultiplexMode(options.httpMaskMultiplex || "off");
   const pathRoot = resolvePathRoot(options.pathRoot, options.pathRootSeed || options.key || options.publicHost);
   const tlsEnabled = options.httpMaskTLS !== false;
   return {
@@ -57,7 +58,7 @@ export function buildClientConfig(options) {
     local_port: Number.parseInt(String(options.localPort || 10233), 10),
     server_address: serverAddress,
     key: String(options.key || "").trim(),
-    aead: String(options.aead || "aes-128-gcm").trim() || "aes-128-gcm",
+    aead,
     ascii: asciiMode,
     padding_min: 0,
     padding_max: 0,

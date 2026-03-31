@@ -13,10 +13,10 @@ Options:
   --path-root <segment>       Optional fixed HTTP mask path root; export uses /<segment>, omitted => derive a stable random segment from key
   --preferred-address <addr>  Optional preferred ingress IP/domain:port for exported node, while keeping --host as Host/SNI
   --host-header <host>        Optional HTTP Host/SNI override
-  --aead <name>               AEAD, default aes-128-gcm
+  --aead <name>               AEAD, default none
   --ascii <mode>              prefer_entropy / prefer_ascii / up_*_down_*, default prefer_entropy
   --packed-downlink <bool>    true enables packed downlink, default true
-  --mux <mode>                off / auto / on, default on
+  --mux <mode>                off / auto / on, default off
   --node-name <name>          Clash node name, default sudoku-cf-worker
 `);
   process.exit(1);
@@ -55,10 +55,10 @@ const config = buildClientConfig({
   localPort: args["local-port"] || "10233",
   pathRoot: args["path-root"] || "",
   httpMaskHost: args["host-header"] || (args["preferred-address"] ? args.host : ""),
-  aead: args.aead || "aes-128-gcm",
+  aead: args.aead || "none",
   ascii: args.ascii || "prefer_entropy",
   enablePureDownlink: !parseBoolean(args["packed-downlink"], true),
-  httpMaskMultiplex: args.mux || "on",
+  httpMaskMultiplex: args.mux || "off",
 });
 
 const shortLink = buildShortLinkFromClientConfig(config);

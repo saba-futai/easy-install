@@ -88,12 +88,12 @@ async function loadSettings(env, requestUrl) {
   if (!sharedKey) throw new Error("SUDOKU_KEY is required");
   const pathRoot = resolvePathRoot(env.SUDOKU_HTTP_MASK_PATH_ROOT || "", sharedKey);
 
-  const aead = String(env.SUDOKU_AEAD || "aes-128-gcm").trim() || "aes-128-gcm";
+  const aead = String(env.SUDOKU_AEAD || "none").trim() || "none";
   const ascii = String(env.SUDOKU_ASCII || "prefer_entropy").trim() || "prefer_entropy";
   const customTable = String(env.SUDOKU_CUSTOM_TABLE || "").trim();
   const manageToken = String(env.SUDOKU_MANAGE_TOKEN || "").trim();
   const enablePureDownlink = parseBoolean(env.SUDOKU_ENABLE_PURE_DOWNLINK, false);
-  const httpMaskMultiplex = normalizeMultiplexMode(env.SUDOKU_HTTP_MASK_MULTIPLEX || "on");
+  const httpMaskMultiplex = normalizeMultiplexMode(env.SUDOKU_HTTP_MASK_MULTIPLEX || "off");
   const preferredIpStrategy = normalizePreferredIpStrategy(env.SUDOKU_PREFERRED_IP_STRATEGY || env.SUDOKU_YX_STRATEGY || "best");
   const preferredRegion = String(env.SUDOKU_PREFERRED_REGION || env.SUDOKU_WK || "").trim().toUpperCase();
   const disablePreferred = parseBoolean(env.SUDOKU_DISABLE_PREFERRED || env.SUDOKU_YXBY, false);
@@ -101,10 +101,6 @@ async function loadSettings(env, requestUrl) {
   const enablePreferredDomains = parseBoolean(env.SUDOKU_ENABLE_PREFERRED_DOMAIN || env.SUDOKU_EPD, true);
   const preferredIpCacheMs = Math.max(0, Number.parseInt(String(env.SUDOKU_PREFERRED_IP_CACHE_MS || env.SUDOKU_YX_CACHE_MS || "60000"), 10) || 0);
   const enableBuiltInPreferred = parseBoolean(env.SUDOKU_ENABLE_BUILTIN_PREFERRED ?? env.SUDOKU_EGI, true);
-  if (!enablePureDownlink && aead === "none") {
-    throw new Error("packed downlink requires AEAD");
-  }
-
   const uplinkTable = await buildSudokuTable(sharedKey, ascii, customTable);
   const downlinkTable = oppositeDirection(uplinkTable);
 
@@ -264,6 +260,13 @@ class SudokuWorkerSession {
     this.processing = Promise.resolve();
     this.outboundChain = Promise.resolve();
     this.muxStreams = new Map();
+    this.pendingSendChunks = [];
+    this.pendingSendBytes = 0;
+    this.pendingSendPromise = null;
+    this.pendingSendResolve = null;
+    this.pendingSendReject = null;
+    this.pendingSendScheduled = false;
+    this.sendBatchBytes = Number.parseInt(String(settings.sendBatchBytes || 32768), 10) || 32768;
   }
 
   async init() {
@@ -496,11 +499,56 @@ class SudokuWorkerSession {
 
   enqueueSendPlain(bytes) {
     const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-    const op = this.outboundChain.then(() => this.sendPlainNow(data));
-    this.outboundChain = op.catch((error) => {
-      this.fail(error);
-    });
+    if (this.closed || data.length === 0) return Promise.resolve();
+    if (!this.pendingSendPromise) {
+      this.pendingSendPromise = new Promise((resolve, reject) => {
+        this.pendingSendResolve = resolve;
+        this.pendingSendReject = reject;
+      });
+    }
+    this.pendingSendChunks.push(data);
+    this.pendingSendBytes += data.length;
+    const op = this.pendingSendPromise;
+    this.schedulePendingSendFlush(this.pendingSendBytes >= this.sendBatchBytes);
     return op;
+  }
+
+  schedulePendingSendFlush(immediate = false) {
+    if (this.pendingSendScheduled || this.closed) return;
+    this.pendingSendScheduled = true;
+    const trigger = () => {
+      this.pendingSendScheduled = false;
+      const op = this.outboundChain.then(() => this.flushPendingSendNow());
+      this.outboundChain = op.catch((error) => {
+        this.fail(error);
+      });
+    };
+    if (immediate) {
+      trigger();
+      return;
+    }
+    queueMicrotask(trigger);
+  }
+
+  async flushPendingSendNow() {
+    if (this.closed || this.pendingSendChunks.length === 0) return;
+    const chunks = this.pendingSendChunks;
+    const resolve = this.pendingSendResolve;
+    const reject = this.pendingSendReject;
+    this.pendingSendChunks = [];
+    this.pendingSendBytes = 0;
+    this.pendingSendPromise = null;
+    this.pendingSendResolve = null;
+    this.pendingSendReject = null;
+
+    try {
+      const plain = chunks.length === 1 ? chunks[0] : concatChunks(chunks);
+      await this.sendPlainNow(plain);
+      resolve?.();
+    } catch (error) {
+      reject?.(error);
+      throw error;
+    }
   }
 
   async sendPlainNow(bytes) {
@@ -515,6 +563,7 @@ class SudokuWorkerSession {
   }
 
   async flushDownlink() {
+    await this.flushPendingSendNow();
     if (this.closed || this.settings.enablePureDownlink || !this.packedEncoder) return;
     const tail = this.packedEncoder.flush();
     if (!this.closed && tail.length > 0) this.ws.send(tail);
@@ -528,6 +577,15 @@ class SudokuWorkerSession {
   close(code = 1000, reason = "closed") {
     if (this.closed) return;
     this.closed = true;
+    try {
+      this.pendingSendReject?.(new Error(reason || "closed"));
+    } catch {}
+    this.pendingSendChunks = [];
+    this.pendingSendBytes = 0;
+    this.pendingSendPromise = null;
+    this.pendingSendResolve = null;
+    this.pendingSendReject = null;
+    this.pendingSendScheduled = false;
     try {
       for (const stream of this.muxStreams.values()) {
         stream.reader?.releaseLock();

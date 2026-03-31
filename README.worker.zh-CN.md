@@ -4,7 +4,7 @@
 
 - `httpmask.mode = ws`
 - `tls = true`
-- `aead = aes-128-gcm`
+- `aead = none`
 - 官方 Go 客户端 `ws` early-handshake（`ed` / `X-Sudoku-Early`）
 - 默认 `enable_pure_downlink = false` 的 packed downlink
 - 显式开启 `enable_pure_downlink = true`
@@ -77,11 +77,11 @@ node cf-worker/tools/build-one-line-worker.mjs
 | `SUDOKU_CLIENT_PORT` | `10233` | 导出的客户端本地 mixed 端口 |
 | `SUDOKU_HTTP_MASK_HOST` | `cdn.example.com` | 可选，覆盖客户端 Host/SNI |
 | `SUDOKU_NODE_NAME` | `sudoku-cf-worker-pure` | Clash 节点名 |
-| `SUDOKU_AEAD` | `aes-128-gcm` | 当前建议只用这个 |
+| `SUDOKU_AEAD` | `none` | 默认 `none` |
 | `SUDOKU_ASCII` | `prefer_entropy` | 也支持 `prefer_ascii`、`up_ascii_down_entropy`、`up_entropy_down_ascii` |
 | `SUDOKU_CUSTOM_TABLE` | `xpxvvpvv` | 可选，自定义表 |
 | `SUDOKU_ENABLE_PURE_DOWNLINK` | `false` | 默认 packed downlink；设为 `true` 时导出 pure downlink 客户端配置 |
-| `SUDOKU_HTTP_MASK_MULTIPLEX` | `on` | 默认开启 mux；也支持 `off / auto / on` |
+| `SUDOKU_HTTP_MASK_MULTIPLEX` | `off` | 默认关闭 mux；也支持 `off / auto / on` |
 
 
 
@@ -129,7 +129,7 @@ node cf-worker/tools/build-shortlink.mjs \
   --host sudoku.example.com \
   --preferred-address 198.41.192.27:443 \
   --key 'my-shared-key' \
-  --aead aes-128-gcm \
+  --aead none \
   --packed-downlink false \
   --node-name sudoku-cf-worker-pure
 ```
@@ -141,7 +141,7 @@ node cf-worker/tools/build-shortlink.mjs \
   --host sudoku.example.com \
   --preferred-address 198.41.192.27:443 \
   --key 'my-shared-key' \
-  --aead aes-128-gcm \
+  --aead none \
   --packed-downlink true \
   --mux on \
   --node-name sudoku-cf-worker-packed
