@@ -46,7 +46,7 @@
 1. 进入 `Workers 和 Pages`。
 2. 点 `Create`，创建一个 Hello World Worker。
 3. 把编辑器里的默认代码全部删掉。
-4. 打开 [cf-worker/dashboard/sudoku-worker.one.js](cf-worker/dashboard/sudoku-worker.one.js)，复制整行内容粘进去。
+4. 打开仓库里的 `cf-worker/dashboard/sudoku-worker.one.js`，复制整行内容粘进去。
 5. 在 Worker 的 `Settings -> Variables` 里按下面的环境变量表配置。
 6. 保存并部署。
 
