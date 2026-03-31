@@ -10,10 +10,12 @@ function usage() {
 
 Options:
   --local-port <port>         Client local port, default 10233
-  --path-root <segment>       Optional HTTP mask path root
+  --path-root <segment>       Optional fixed HTTP mask path root; omitted => derive a stable random segment from key
   --host-header <host>        Optional HTTP Host/SNI override
   --aead <name>               AEAD, default aes-128-gcm
-  --ascii <mode>              prefer_entropy / prefer_ascii, default prefer_entropy
+  --ascii <mode>              prefer_entropy / prefer_ascii / up_*_down_*, default prefer_entropy
+  --packed-downlink <bool>    true enables packed downlink, default true
+  --mux <mode>                off / auto / on, default on
   --node-name <name>          Clash node name, default sudoku-cf-worker
 `);
   process.exit(1);
@@ -32,6 +34,14 @@ function parseArgs(argv) {
   return result;
 }
 
+function parseBoolean(value, fallback) {
+  if (value === undefined) return fallback;
+  const raw = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(raw)) return true;
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+  usage();
+}
+
 const args = parseArgs(process.argv.slice(2));
 if (!args.host || !args.key) {
   usage();
@@ -45,6 +55,8 @@ const config = buildClientConfig({
   httpMaskHost: args["host-header"] || "",
   aead: args.aead || "aes-128-gcm",
   ascii: args.ascii || "prefer_entropy",
+  enablePureDownlink: !parseBoolean(args["packed-downlink"], true),
+  httpMaskMultiplex: args.mux || "on",
 });
 
 const shortLink = buildShortLinkFromClientConfig(config);

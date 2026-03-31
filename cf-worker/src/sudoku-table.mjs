@@ -1,5 +1,7 @@
 import { GoMathRand } from "./go-rand.mjs";
 
+const ASCII_TOKEN_ASCII = "ascii";
+const ASCII_TOKEN_ENTROPY = "entropy";
 const hintPositions = buildHintPositions();
 let allGridsCache;
 const tableCache = new Map();
@@ -86,6 +88,54 @@ function hasUniqueMatch(grids, targetGrid, positions) {
   return matches === 1;
 }
 
+function normalizeAsciiModeToken(token) {
+  switch (String(token || "").trim().toLowerCase()) {
+    case "ascii":
+    case "prefer_ascii":
+      return ASCII_TOKEN_ASCII;
+    case "":
+    case "entropy":
+    case "prefer_entropy":
+      return ASCII_TOKEN_ENTROPY;
+    default:
+      return null;
+  }
+}
+
+function singleDirectionPreference(token) {
+  return token === ASCII_TOKEN_ASCII ? "prefer_ascii" : "prefer_entropy";
+}
+
+function parseAsciiMode(mode) {
+  const raw = String(mode || "").trim().toLowerCase();
+  if (!raw || raw === "entropy" || raw === "prefer_entropy") {
+    return { uplink: ASCII_TOKEN_ENTROPY, downlink: ASCII_TOKEN_ENTROPY };
+  }
+  if (raw === "ascii" || raw === "prefer_ascii") {
+    return { uplink: ASCII_TOKEN_ASCII, downlink: ASCII_TOKEN_ASCII };
+  }
+  if (!raw.startsWith("up_")) {
+    throw new Error(`invalid ascii mode: ${mode}`);
+  }
+  const parts = raw.slice(3).split("_down_");
+  if (parts.length !== 2) throw new Error(`invalid ascii mode: ${mode}`);
+  const uplink = normalizeAsciiModeToken(parts[0]);
+  const downlink = normalizeAsciiModeToken(parts[1]);
+  if (!uplink || !downlink) throw new Error(`invalid ascii mode: ${mode}`);
+  return { uplink, downlink };
+}
+
+export function normalizeAsciiMode(mode) {
+  const parsed = parseAsciiMode(mode);
+  if (parsed.uplink === ASCII_TOKEN_ASCII && parsed.downlink === ASCII_TOKEN_ASCII) return "prefer_ascii";
+  if (parsed.uplink === ASCII_TOKEN_ENTROPY && parsed.downlink === ASCII_TOKEN_ENTROPY) return "prefer_entropy";
+  return `up_${parsed.uplink}_down_${parsed.downlink}`;
+}
+
+function customPatternForToken(token, customPattern) {
+  return token === ASCII_TOKEN_ENTROPY ? String(customPattern || "").trim() : "";
+}
+
 function resolveLayout(mode, customPattern) {
   const normalized = String(mode || "").trim().toLowerCase();
   if (normalized === "ascii" || normalized === "prefer_ascii") {
@@ -93,6 +143,7 @@ function resolveLayout(mode, customPattern) {
     for (let i = 0; i < 32; i += 1) paddingPool.push(0x20 + i);
     return {
       name: "ascii",
+      padMarker: 0x3f,
       paddingPool: Uint8Array.from(paddingPool),
       isHint(b) {
         return (b & 0x40) === 0x40 || b === 0x0a;
@@ -100,6 +151,15 @@ function resolveLayout(mode, customPattern) {
       encodeHint(val, pos) {
         const b = 0x40 | ((val & 0x03) << 4) | (pos & 0x0f);
         return b === 0x7f ? 0x0a : b;
+      },
+      encodeGroup(group) {
+        const b = 0x40 | (group & 0x3f);
+        return b === 0x7f ? 0x0a : b;
+      },
+      decodeGroup(b) {
+        if (b === 0x0a) return { group: 0x3f, ok: true };
+        if ((b & 0x40) === 0) return { group: 0, ok: false };
+        return { group: b & 0x3f, ok: true };
       },
     };
   }
@@ -110,12 +170,21 @@ function resolveLayout(mode, customPattern) {
 
   return {
     name: "entropy",
+    padMarker: 0x80,
     paddingPool: Uint8Array.from([0x80, 0x10, 0x81, 0x11, 0x82, 0x12, 0x83, 0x13, 0x84, 0x14, 0x85, 0x15, 0x86, 0x16, 0x87, 0x17]),
     isHint(b) {
       return (b & 0x90) === 0;
     },
     encodeHint(val, pos) {
       return ((val & 0x03) << 5) | (pos & 0x0f);
+    },
+    encodeGroup(group) {
+      const v = group & 0x3f;
+      return ((v & 0x30) << 1) | (v & 0x0f);
+    },
+    decodeGroup(b) {
+      if ((b & 0x90) !== 0) return { group: 0, ok: false };
+      return { group: (((b >> 1) & 0x30) | (b & 0x0f)) & 0x3f, ok: true };
     },
   };
 }
@@ -165,6 +234,7 @@ function buildCustomLayout(pattern) {
   paddingPool.sort((a, b) => a - b);
   return {
     name: `custom(${cleaned})`,
+    padMarker: paddingPool[0],
     paddingPool: Uint8Array.from(paddingPool),
     isHint(b) {
       return (b & xMask) === xMask;
@@ -172,59 +242,112 @@ function buildCustomLayout(pattern) {
     encodeHint(val, pos) {
       return encodeBits(val, pos, -1);
     },
+    encodeGroup(group) {
+      return encodeBits((group >> 4) & 0x03, group & 0x0f, -1);
+    },
+    decodeGroup(b) {
+      if ((b & xMask) !== xMask) return { group: 0, ok: false };
+      let val = 0;
+      let pos = 0;
+      if (b & (1 << pBits[0])) val |= 0x02;
+      if (b & (1 << pBits[1])) val |= 0x01;
+      for (let i = 0; i < 4; i += 1) {
+        if (b & (1 << vBits[i])) pos |= (1 << (3 - i));
+      }
+      return { group: ((val << 4) | pos) & 0x3f, ok: true };
+    },
   };
 }
 
+async function sha256Bytes(bytes) {
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+}
+
 async function seedFromKey(key) {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key)));
+  const digest = await sha256Bytes(new TextEncoder().encode(key));
   let value = 0n;
   for (let i = 0; i < 8; i += 1) value = (value << 8n) | BigInt(digest[i]);
   return BigInt.asIntN(64, value);
 }
 
+async function tableHintFingerprint(key, mode, uplinkPattern, downlinkPattern) {
+  const raw = [ "sudoku-table-hint", key, mode, String(uplinkPattern || "").trim().toLowerCase(), String(downlinkPattern || "").trim().toLowerCase() ].join("\x00");
+  const digest = await sha256Bytes(new TextEncoder().encode(raw));
+  return ((digest[0] << 24) | (digest[1] << 16) | (digest[2] << 8) | digest[3]) >>> 0;
+}
+
+async function buildSingleDirectionTable(key, mode = "prefer_entropy", customPattern = "") {
+  const layout = resolveLayout(mode, customPattern);
+  const grids = generateAllGrids();
+  const shuffled = grids.slice();
+  const rng = new GoMathRand(await seedFromKey(key));
+  rng.shuffle(shuffled.length, (i, j) => {
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  });
+
+  const encodeTable = Array.from({ length: 256 }, () => []);
+  const decodeMap = new Map();
+
+  for (let byteVal = 0; byteVal < 256; byteVal += 1) {
+    const targetGrid = shuffled[byteVal];
+    for (const positions of hintPositions) {
+      if (!hasUniqueMatch(grids, targetGrid, positions)) continue;
+      const hints = new Uint8Array(4);
+      for (let i = 0; i < 4; i += 1) {
+        const pos = positions[i];
+        hints[i] = layout.encodeHint(targetGrid[pos] - 1, pos);
+      }
+      encodeTable[byteVal].push(hints);
+      decodeMap.set(packHintsToKey(hints), byteVal);
+    }
+    if (encodeTable[byteVal].length === 0) {
+      throw new Error(`empty Sudoku encode table for byte ${byteVal}`);
+    }
+  }
+
+  return {
+    encodeTable,
+    decodeMap,
+    paddingPool: layout.paddingPool,
+    padMarker: layout.padMarker,
+    isHint: layout.isHint,
+    encodeGroup: layout.encodeGroup,
+    decodeGroup: layout.decodeGroup,
+    isASCII: layout.name === "ascii",
+    hint: 0,
+    opposite: null,
+  };
+}
+
 export async function buildSudokuTable(key, mode = "prefer_entropy", customPattern = "") {
-  const cacheKey = JSON.stringify([key, mode, customPattern]);
+  const normalizedMode = normalizeAsciiMode(mode);
+  const cacheKey = JSON.stringify([key, normalizedMode, customPattern]);
   if (tableCache.has(cacheKey)) return tableCache.get(cacheKey);
 
   const promise = (async () => {
-    const layout = resolveLayout(mode, customPattern);
-    const grids = generateAllGrids();
-    const shuffled = grids.slice();
-    const rng = new GoMathRand(await seedFromKey(key));
-    rng.shuffle(shuffled.length, (i, j) => {
-      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-    });
-
-    const encodeTable = Array.from({ length: 256 }, () => []);
-    const decodeMap = new Map();
-
-    for (let byteVal = 0; byteVal < 256; byteVal += 1) {
-      const targetGrid = shuffled[byteVal];
-      for (const positions of hintPositions) {
-        if (!hasUniqueMatch(grids, targetGrid, positions)) continue;
-        const hints = new Uint8Array(4);
-        for (let i = 0; i < 4; i += 1) {
-          const pos = positions[i];
-          hints[i] = layout.encodeHint(targetGrid[pos] - 1, pos);
-        }
-        encodeTable[byteVal].push(hints);
-        decodeMap.set(packHintsToKey(hints), byteVal);
-      }
-      if (encodeTable[byteVal].length === 0) {
-        throw new Error(`empty Sudoku encode table for byte ${byteVal}`);
-      }
+    const asciiMode = parseAsciiMode(normalizedMode);
+    const uplinkPattern = customPatternForToken(asciiMode.uplink, customPattern);
+    const downlinkPattern = customPatternForToken(asciiMode.downlink, customPattern);
+    const hint = await tableHintFingerprint(key, normalizedMode, uplinkPattern, downlinkPattern);
+    const uplink = await buildSingleDirectionTable(key, singleDirectionPreference(asciiMode.uplink), uplinkPattern);
+    uplink.hint = hint;
+    if (asciiMode.uplink === asciiMode.downlink) {
+      uplink.opposite = uplink;
+      return uplink;
     }
-
-    return {
-      encodeTable,
-      decodeMap,
-      paddingPool: layout.paddingPool,
-      isHint: layout.isHint,
-    };
+    const downlink = await buildSingleDirectionTable(key, singleDirectionPreference(asciiMode.downlink), downlinkPattern);
+    downlink.hint = hint;
+    uplink.opposite = downlink;
+    downlink.opposite = uplink;
+    return uplink;
   })();
 
   tableCache.set(cacheKey, promise);
   return promise;
+}
+
+export function oppositeDirection(table) {
+  return table?.opposite || table;
 }
 
 export function decodeSudokuBytes(table, state, chunk) {

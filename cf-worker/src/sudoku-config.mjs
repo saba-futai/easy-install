@@ -1,4 +1,5 @@
 import { buildKIPMessage, encodeAddress, joinHostPort, splitHostPort } from "./sudoku-protocol.mjs";
+import { normalizeAsciiMode } from "./sudoku-table.mjs";
 
 export function normalizePathRoot(value) {
   const raw = String(value || "").trim().replace(/^\/+|\/+$/g, "");
@@ -9,12 +10,46 @@ export function normalizePathRoot(value) {
   return raw;
 }
 
+export function deriveRandomPathRoot(seed) {
+  const input = new TextEncoder().encode(String(seed || "sudoku-path-root"));
+  let hash = 0x811c9dc5;
+  for (const byte of input) {
+    hash ^= byte;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  let state = hash || 0x9e3779b9;
+  const nextUint32 = () => {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    state >>>= 0;
+    return state;
+  };
+  const alphabet = "abcdefghijklmnopqrstuvwxyz";
+  const length = 6 + (nextUint32() % 5);
+  let output = "";
+  for (let i = 0; i < length; i += 1) {
+    output += alphabet[nextUint32() % alphabet.length];
+  }
+  return output;
+}
+
+export function resolvePathRoot(pathRoot, seed) {
+  const normalized = normalizePathRoot(pathRoot);
+  if (normalized) return normalized;
+  return deriveRandomPathRoot(seed);
+}
+
 export function buildWSPath(pathRoot) {
   return pathRoot ? `/${pathRoot}/ws` : "/ws";
 }
 
 export function buildClientConfig(options) {
   const serverAddress = joinHostPort(options.publicHost, 443);
+  const asciiMode = normalizeAsciiMode(options.ascii || "prefer_entropy");
+  const pureDownlink = options.enablePureDownlink === true;
+  const multiplex = normalizeMultiplexMode(options.httpMaskMultiplex || "on");
+  const pathRoot = resolvePathRoot(options.pathRoot, options.pathRootSeed || options.key || options.publicHost);
   return {
     mode: "client",
     transport: "tcp",
@@ -22,17 +57,17 @@ export function buildClientConfig(options) {
     server_address: serverAddress,
     key: String(options.key || "").trim(),
     aead: String(options.aead || "aes-128-gcm").trim() || "aes-128-gcm",
-    ascii: String(options.ascii || "prefer_entropy").trim() || "prefer_entropy",
+    ascii: asciiMode,
     padding_min: 0,
     padding_max: 0,
-    enable_pure_downlink: true,
+    enable_pure_downlink: pureDownlink,
     httpmask: {
       disable: false,
       mode: "ws",
       tls: true,
       host: String(options.httpMaskHost || "").trim(),
-      path_root: normalizePathRoot(options.pathRoot),
-      multiplex: "off",
+      path_root: pathRoot,
+      multiplex,
     },
     rule_urls: ["global"],
   };
@@ -44,15 +79,16 @@ export function buildShortLinkFromClientConfig(config) {
     h: host,
     p: port,
     k: config.key,
-    a: config.ascii === "prefer_ascii" ? "ascii" : "entropy",
+    a: encodeAscii(config.ascii),
     e: config.aead,
     m: config.local_port,
     ht: true,
     hm: "ws",
-    x: false,
+    x: config.enable_pure_downlink === false,
   };
   if (config.httpmask?.host) payload.hh = config.httpmask.host;
   if (config.httpmask?.path_root) payload.hy = config.httpmask.path_root;
+  if (config.httpmask?.multiplex && config.httpmask.multiplex !== "off") payload.hx = config.httpmask.multiplex;
   return `sudoku://${toBase64Url(JSON.stringify(payload))}`;
 }
 
@@ -68,12 +104,12 @@ export function buildClashNode(config, nodeName = "sudoku-cf-worker-pure") {
     `  aead-method: ${config.aead}`,
     "  padding-min: 0",
     "  padding-max: 0",
-    `  table-type: ${config.ascii}`,
+    `  table-type: ${encodeAscii(config.ascii)}`,
     "  http-mask: true",
     "  http-mask-mode: ws",
     "  http-mask-tls: true",
-    "  http-mask-multiplex: \"off\"",
-    "  enable-pure-downlink: true",
+    `  http-mask-multiplex: "${normalizeMultiplexMode(config.httpmask?.multiplex || "off")}"`,
+    `  enable-pure-downlink: ${config.enable_pure_downlink !== false}`,
   ];
   if (config.httpmask?.host) lines.push(`  http-mask-host: "${config.httpmask.host}"`);
   if (config.httpmask?.path_root) lines.push(`  http-mask-path-root: "${config.httpmask.path_root}"`);
@@ -91,4 +127,23 @@ function toBase64Url(input) {
     binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   }
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function encodeAscii(mode) {
+  const normalized = normalizeAsciiMode(mode || "prefer_entropy");
+  switch (normalized) {
+    case "prefer_ascii":
+      return "ascii";
+    case "prefer_entropy":
+      return "entropy";
+    default:
+      return normalized;
+  }
+}
+
+function normalizeMultiplexMode(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw || raw === "off") return "off";
+  if (raw === "auto" || raw === "on") return raw;
+  throw new Error(`invalid httpmask multiplex mode: ${value}`);
 }

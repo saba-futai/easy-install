@@ -13,7 +13,7 @@
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
 ```
 
-Cloudflare Worker 入口部署请看：[README.worker.zh-CN.md](./README.worker.zh-CN.md)
+Cloudflare Worker 入口部署请看：[README.worker.zh-CN.md](./README.worker.zh-CN.md)。如果用户没有 GitHub，也可以直接使用仓库里的单文件版 [cf-worker/dashboard/sudoku-worker.one.js](cf-worker/dashboard/sudoku-worker.one.js) 粘贴到 Cloudflare Dashboard 的 Hello World Worker 中。
 
 ---
 
@@ -117,6 +117,7 @@ Cloudflare Worker 入口部署请看：[README.worker.zh-CN.md](./README.worker.
 | X/P/V 表 | 随机 `custom_table` |
 | 纯 Sudoku 下行 | `false` (带宽优化模式) |
 | HTTP 掩码 | `true` (`auto`) |
+| HTTP 掩码路径前缀 | 随机 `6-10` 位小写字母 |
 
 ### 自定义配置
 
@@ -147,7 +148,7 @@ sudo SUDOKU_HTTP_MASK_MODE=poll bash -c "$(curl -fsSL https://raw.githubusercont
 # 开启 tunnel 模式 HTTPS（v0.1.4 起不再按端口自动推断 TLS）
 sudo SUDOKU_HTTP_MASK_TLS=true bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
 
-# HTTP mask/tunnel 路径前缀（一级路径；例如 aabbcc => /aabbcc/session /aabbcc/stream）
+# HTTP mask/tunnel 路径前缀（一级路径；默认随机 6-10 位小写字母，例如 aabbcc => /aabbcc/session /aabbcc/stream）
 sudo SUDOKU_HTTP_MASK_PATH_ROOT=aabbcc bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
 ```
 
@@ -383,7 +384,7 @@ sudo SUDOKU_HTTP_MASK_MODE=poll bash -c "$(curl -fsSL https://raw.githubusercont
 # Enable HTTPS in tunnel modes (since v0.1.4, no port-based TLS inference)
 sudo SUDOKU_HTTP_MASK_TLS=true bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
 
-# HTTP mask/tunnel path root (single segment; e.g. aabbcc => /aabbcc/session /aabbcc/stream)
+# HTTP mask/tunnel path root (single segment; default is random 6-10 lowercase letters, e.g. aabbcc => /aabbcc/session /aabbcc/stream)
 sudo SUDOKU_HTTP_MASK_PATH_ROOT=aabbcc bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
 ```
 
@@ -429,6 +430,7 @@ Import this `sudoku://...` short link in the desktop GUI client (see "Desktop GU
 	  http-mask: true
 	  http-mask-mode: ws
 	  http-mask-tls: false
+	  http-mask-path-root: "aabbcc"
 	  http-mask-multiplex: "on"
 	  enable-pure-downlink: false
 ```

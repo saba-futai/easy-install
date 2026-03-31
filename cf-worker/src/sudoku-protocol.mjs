@@ -98,13 +98,21 @@ export function decodeClientHello(payload) {
   if (payload.length < 68) throw new Error("client hello too short");
   const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
   const timestamp = Number(view.getBigUint64(0));
-  return {
+  const out = {
     timestamp,
     userHash: payload.slice(8, 16),
     nonce: payload.slice(16, 32),
     clientPub: payload.slice(32, 64),
     features: view.getUint32(64),
   };
+  if (payload.length >= 72) {
+    out.tableHint = view.getUint32(68);
+    out.hasTableHint = true;
+  } else {
+    out.tableHint = 0;
+    out.hasTableHint = false;
+  }
+  return out;
 }
 
 export function encodeServerHello(nonce, serverPub, selectedFeatures) {
@@ -186,6 +194,60 @@ export function decodeAddress(payload) {
   throw new Error("invalid address payload");
 }
 
+export function buildMuxFrame(frameType, streamId, payload = new Uint8Array()) {
+  const data = payload instanceof Uint8Array ? payload : new Uint8Array(payload);
+  if (data.length > 256 * 1024) throw new Error(`mux payload too large: ${data.length}`);
+  const out = new Uint8Array(9 + data.length);
+  out[0] = frameType;
+  new DataView(out.buffer).setUint32(1, streamId);
+  new DataView(out.buffer).setUint32(5, data.length);
+  out.set(data, 9);
+  return out;
+}
+
+export function tryReadMuxFrame(queue) {
+  if (queue.length < 9) return null;
+  const header = queue.peek(9);
+  const payloadLength = new DataView(header.buffer, header.byteOffset, header.byteLength).getUint32(5);
+  if (payloadLength > 256 * 1024) throw new Error(`invalid mux frame length: ${payloadLength}`);
+  if (queue.length < 9 + payloadLength) return null;
+  queue.read(9);
+  return {
+    frameType: header[0],
+    streamId: new DataView(header.buffer, header.byteOffset, header.byteLength).getUint32(1),
+    payload: queue.read(payloadLength) || new Uint8Array(),
+  };
+}
+
+export function buildUoTDatagram(address, payload = new Uint8Array()) {
+  const addr = encodeAddress(address);
+  const body = payload instanceof Uint8Array ? payload : new Uint8Array(payload);
+  if (addr.length > 0xffff) throw new Error(`address too long: ${addr.length}`);
+  if (body.length > 0xffff) throw new Error(`payload too large: ${body.length}`);
+  const out = new Uint8Array(4 + addr.length + body.length);
+  const view = new DataView(out.buffer);
+  view.setUint16(0, addr.length);
+  view.setUint16(2, body.length);
+  out.set(addr, 4);
+  out.set(body, 4 + addr.length);
+  return out;
+}
+
+export function tryReadUoTDatagram(queue) {
+  if (queue.length < 4) return null;
+  const header = queue.peek(4);
+  const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
+  const addrLength = view.getUint16(0);
+  const payloadLength = view.getUint16(2);
+  if (addrLength <= 0 || addrLength > 64 * 1024) throw new Error(`invalid address length: ${addrLength}`);
+  if (payloadLength > 64 * 1024) throw new Error(`invalid payload length: ${payloadLength}`);
+  if (queue.length < 4 + addrLength + payloadLength) return null;
+  queue.read(4);
+  const addr = queue.read(addrLength) || new Uint8Array();
+  const payload = queue.read(payloadLength) || new Uint8Array();
+  return { address: decodeAddress(addr), payload };
+}
+
 function expandIPv6(host) {
   const [left, right = ""] = host.split("::");
   const leftParts = left ? left.split(":").filter(Boolean) : [];
@@ -239,7 +301,7 @@ export async function deriveSessionDirectionalBases(psk, shared, nonce) {
   };
 }
 
-export async function processEarlyClientPayload({ sharedKey, aead, payload }) {
+export async function processEarlyClientPayload({ sharedKey, aead, payload, expectedTableHint = null }) {
   if (!payload || payload.length === 0) throw new Error("empty early payload");
   const psk = await derivePSKDirectionalBases(sharedKey);
   const record = new RecordLayer(aead, psk.s2c, psk.c2s);
@@ -253,6 +315,9 @@ export async function processEarlyClientPayload({ sharedKey, aead, payload }) {
   const hello = decodeClientHello(msg.payload);
   if (Math.abs(Math.floor(Date.now() / 1000) - hello.timestamp) > 60) {
     throw new Error("time skew/replay");
+  }
+  if (expectedTableHint !== null && hello.hasTableHint && hello.tableHint !== (expectedTableHint >>> 0)) {
+    throw new Error(`unknown table hint: ${hello.tableHint}`);
   }
   const ephemeral = await generateX25519KeyPair();
   const shared = await deriveX25519SharedSecret(ephemeral.privateKey, hello.clientPub);

@@ -23,7 +23,7 @@
 #   SUDOKU_HTTP_MASK_TLS  - Use HTTPS in HTTP mask tunnel modes (default: false)
 #   SUDOKU_HTTP_MASK_MULTIPLEX - HTTP mask mux: off/auto/on (default: on)
 #   SUDOKU_HTTP_MASK_HOST - Override HTTP Host/SNI in tunnel modes (default: empty)
-#   SUDOKU_HTTP_MASK_PATH_ROOT - Optional first-level path prefix for HTTP mask/tunnel endpoints (default: empty)
+#   SUDOKU_HTTP_MASK_PATH_ROOT - Optional first-level path prefix for HTTP mask/tunnel endpoints (default: random 6-10 lowercase letters)
 #
 
 set -e
@@ -144,6 +144,18 @@ random_uint32() {
     printf '%s' "${value}"
 }
 
+generate_random_path_root() {
+    local alphabet="abcdefghijklmnopqrstuvwxyz"
+    local length=$((6 + ($(random_uint32) % 5)))
+    local output=""
+    local i idx
+    for ((i=0; i<length; i++)); do
+        idx=$(($(random_uint32) % ${#alphabet}))
+        output+="${alphabet:${idx}:1}"
+    done
+    printf '%s' "${output}"
+}
+
 is_tcp_port_in_use() {
     local port="${1:-}"
     if ! is_valid_port "${port}"; then
@@ -253,6 +265,10 @@ normalize_settings() {
     done
     if [[ -n "${HTTP_MASK_PATH_ROOT}" && ! "${HTTP_MASK_PATH_ROOT}" =~ ^[A-Za-z0-9_-]+$ ]]; then
         error "Invalid SUDOKU_HTTP_MASK_PATH_ROOT=${SUDOKU_HTTP_MASK_PATH_ROOT} (expected single segment [A-Za-z0-9_-], e.g. aabbcc)"
+    fi
+    if [[ "${http_mask_enabled}" == "true" && -z "${HTTP_MASK_PATH_ROOT}" ]]; then
+        HTTP_MASK_PATH_ROOT=$(generate_random_path_root)
+        info "Generated random HTTP mask path root: ${HTTP_MASK_PATH_ROOT}"
     fi
 
     HTTP_MASK_MULTIPLEX=$(trim_space "${SUDOKU_HTTP_MASK_MULTIPLEX}")
@@ -1605,6 +1621,9 @@ generate_clash_config() {
 
     if [[ -n "${HTTP_MASK_HOST:-}" ]]; then
         lines+=("  http-mask-host: \"${HTTP_MASK_HOST}\"")
+    fi
+    if [[ -n "${HTTP_MASK_PATH_ROOT:-}" ]]; then
+        lines+=("  http-mask-path-root: \"${HTTP_MASK_PATH_ROOT}\"")
     fi
 
     lines+=("  enable-pure-downlink: false")

@@ -1,10 +1,12 @@
 import { connect } from "cloudflare:sockets";
 
-import { buildClientConfig, buildClashNode, buildShortLinkFromClientConfig, buildWSPath, normalizePathRoot } from "./sudoku-config.mjs";
+import { buildClientConfig, buildClashNode, buildShortLinkFromClientConfig, buildWSPath, resolvePathRoot } from "./sudoku-config.mjs";
+import { PackedDownlinkEncoder } from "./sudoku-packed.mjs";
 import {
   ByteQueue,
   RecordLayer,
   buildKIPMessage,
+  buildMuxFrame,
   concatChunks,
   decodeBase64Url,
   decodeAddress,
@@ -17,8 +19,9 @@ import {
   processEarlyClientPayload,
   splitHostPort,
   tryReadKIPMessage,
+  tryReadMuxFrame,
 } from "./sudoku-protocol.mjs";
-import { buildSudokuTable, decodeSudokuBytes, encodeSudokuBytes, newSudokuDecodeState } from "./sudoku-table.mjs";
+import { buildSudokuTable, decodeSudokuBytes, encodeSudokuBytes, newSudokuDecodeState, oppositeDirection } from "./sudoku-table.mjs";
 
 function textResponse(body, status = 200, contentType = "text/plain; charset=utf-8") {
   return new Response(body, { status, headers: { "content-type": contentType } });
@@ -32,16 +35,40 @@ function htmlEscape(input) {
     .replaceAll('"', "&quot;");
 }
 
+function parseBoolean(value, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const raw = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(raw)) return true;
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+  throw new Error(`invalid boolean value: ${value}`);
+}
+
+function normalizeMultiplexMode(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw || raw === "off") return "off";
+  if (raw === "auto" || raw === "on") return raw;
+  throw new Error(`invalid multiplex mode: ${value}`);
+}
+
 async function loadSettings(env, requestUrl) {
   const url = new URL(requestUrl);
-  const pathRoot = normalizePathRoot(env.SUDOKU_HTTP_MASK_PATH_ROOT || "");
   const publicHost = String(env.SUDOKU_PUBLIC_HOST || url.hostname).trim();
   const sharedKey = String(env.SUDOKU_KEY || "").trim();
   if (!sharedKey) throw new Error("SUDOKU_KEY is required");
+  const pathRoot = resolvePathRoot(env.SUDOKU_HTTP_MASK_PATH_ROOT || "", sharedKey);
+
   const aead = String(env.SUDOKU_AEAD || "aes-128-gcm").trim() || "aes-128-gcm";
   const ascii = String(env.SUDOKU_ASCII || "prefer_entropy").trim() || "prefer_entropy";
   const customTable = String(env.SUDOKU_CUSTOM_TABLE || "").trim();
   const manageToken = String(env.SUDOKU_MANAGE_TOKEN || "").trim();
+  const enablePureDownlink = parseBoolean(env.SUDOKU_ENABLE_PURE_DOWNLINK, false);
+  const httpMaskMultiplex = normalizeMultiplexMode(env.SUDOKU_HTTP_MASK_MULTIPLEX || "on");
+  if (!enablePureDownlink && aead === "none") {
+    throw new Error("packed downlink requires AEAD");
+  }
+
+  const uplinkTable = await buildSudokuTable(sharedKey, ascii, customTable);
+  const downlinkTable = oppositeDirection(uplinkTable);
 
   return {
     publicHost,
@@ -50,16 +77,21 @@ async function loadSettings(env, requestUrl) {
     ascii,
     customTable,
     manageToken,
+    enablePureDownlink,
+    httpMaskMultiplex,
     nodeName: String(env.SUDOKU_NODE_NAME || "sudoku-cf-worker-pure").trim() || "sudoku-cf-worker-pure",
     wsPath: buildWSPath(pathRoot),
-    table: await buildSudokuTable(sharedKey, ascii, customTable),
+    uplinkTable,
+    downlinkTable,
     clientConfig: buildClientConfig({
       publicHost,
       localPort: env.SUDOKU_CLIENT_PORT || "10233",
       key: sharedKey,
       aead,
       ascii,
+      enablePureDownlink,
       httpMaskHost: String(env.SUDOKU_HTTP_MASK_HOST || "").trim(),
+      httpMaskMultiplex,
       pathRoot,
     }),
   };
@@ -75,6 +107,7 @@ function renderPage(settings, requestUrl) {
   const clientJson = JSON.stringify(settings.clientConfig, null, 2);
   const url = new URL(requestUrl);
   const base = configBase(url.origin, settings.manageToken);
+  const downlinkMode = settings.enablePureDownlink ? "pure_downlink" : "packed_downlink";
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -92,7 +125,7 @@ function renderPage(settings, requestUrl) {
 </head>
 <body><main>
   <h1>Sudoku Pure Cloudflare Worker</h1>
-  <p>当前实现是纯 Worker 版 Sudoku 服务端。入口固定为 <code>wss://${htmlEscape(settings.publicHost)}${htmlEscape(settings.wsPath)}</code>，当前默认参数为 <code>ws + tls + aes-128-gcm + pure_downlink</code>。</p>
+  <p>当前实现是纯 Worker 版 Sudoku 服务端。入口固定为 <code>wss://${htmlEscape(settings.publicHost)}${htmlEscape(settings.wsPath)}</code>，当前参数为 <code>ws + tls + ${htmlEscape(settings.aead)} + ${htmlEscape(downlinkMode)}</code>。</p>
   <div class="grid">
     <section class="card"><div class="label">Short Link</div><pre>${htmlEscape(shortLink)}</pre></section>
     <section class="card"><div class="label">Client JSON</div><pre>${htmlEscape(clientJson)}</pre></section>
@@ -127,15 +160,20 @@ class SudokuWorkerSession {
     this.initialRecvBase = options.recvBase || null;
     this.closed = false;
     this.processing = Promise.resolve();
+    this.outboundChain = Promise.resolve();
+    this.muxStreams = new Map();
   }
 
   async init() {
     if (this.initialSendBase && this.initialRecvBase) {
       this.record = new RecordLayer(this.settings.aead, this.initialSendBase, this.initialRecvBase);
-      return;
+    } else {
+      const psk = await derivePSKDirectionalBases(this.settings.sharedKey);
+      this.record = new RecordLayer(this.settings.aead, psk.s2c, psk.c2s);
     }
-    const psk = await derivePSKDirectionalBases(this.settings.sharedKey);
-    this.record = new RecordLayer(this.settings.aead, psk.s2c, psk.c2s);
+    if (!this.settings.enablePureDownlink) {
+      this.packedEncoder = new PackedDownlinkEncoder(this.settings.downlinkTable, 0, 0);
+    }
   }
 
   enqueueClientChunk(chunk) {
@@ -144,7 +182,7 @@ class SudokuWorkerSession {
 
   async handleClientChunk(chunk) {
     if (this.closed) return;
-    const sudokuDecoded = decodeSudokuBytes(this.settings.table, this.inboundSudokuState, chunk);
+    const sudokuDecoded = decodeSudokuBytes(this.settings.uplinkTable, this.inboundSudokuState, chunk);
     if (sudokuDecoded.length === 0) return;
     const plains = await this.record.pushCipherBytes(sudokuDecoded);
     for (const plain of plains) {
@@ -162,19 +200,37 @@ class SudokuWorkerSession {
         return;
       }
 
+      if (this.stage === "mux") {
+        const frame = tryReadMuxFrame(this.inboundPlainQueue);
+        if (!frame) return;
+        await this.handleMuxFrame(frame);
+        continue;
+      }
+
       const msg = tryReadKIPMessage(this.inboundPlainQueue);
       if (!msg) return;
-
       if (msg.type === 0x14) continue;
+
       if (this.stage === "hello") {
         if (msg.type !== 0x01) throw new Error(`unexpected handshake message: ${msg.type}`);
         await this.handleClientHello(msg.payload);
         continue;
       }
+
       if (this.stage === "open") {
-        if (msg.type !== 0x10) throw new Error(`unexpected session message: ${msg.type}`);
-        await this.handleOpenTcp(msg.payload);
-        continue;
+        if (msg.type === 0x10) {
+          await this.handleOpenTcp(msg.payload);
+          continue;
+        }
+        if (msg.type === 0x11) {
+          await this.handleStartMux();
+          continue;
+        }
+        if (msg.type === 0x12) {
+          await this.handleStartUoT();
+          continue;
+        }
+        throw new Error(`unexpected session message: ${msg.type}`);
       }
       return;
     }
@@ -185,16 +241,20 @@ class SudokuWorkerSession {
     if (Math.abs(Math.floor(Date.now() / 1000) - hello.timestamp) > 60) {
       throw new Error("time skew/replay");
     }
+    if (hello.hasTableHint && hello.tableHint !== (this.settings.uplinkTable.hint >>> 0)) {
+      throw new Error(`unknown table hint: ${hello.tableHint}`);
+    }
     const ephemeral = await generateX25519KeyPair();
     const shared = await deriveX25519SharedSecret(ephemeral.privateKey, hello.clientPub);
     const session = await deriveSessionDirectionalBases(this.settings.sharedKey, shared, hello.nonce);
-    const serverHello = buildKIPMessage(0x02, concatChunks([hello.nonce, ephemeral.publicKey, new Uint8Array([
+    const features = new Uint8Array([
       (hello.features >>> 24) & 0xff,
       (hello.features >>> 16) & 0xff,
       (hello.features >>> 8) & 0xff,
       hello.features & 0xff,
-    ])]));
-    await this.sendPlain(serverHello);
+    ]);
+    const serverHello = buildKIPMessage(0x02, concatChunks([hello.nonce, ephemeral.publicKey, features]));
+    await this.enqueueSendPlain(serverHello);
     await this.record.rekey(session.s2c, session.c2s);
     this.stage = "open";
   }
@@ -208,9 +268,15 @@ class SudokuWorkerSession {
     this.stage = "stream";
     this.startOutboundPump();
     const rest = this.inboundPlainQueue.readAll();
-    if (rest.length > 0) {
-      await this.tcpWriter.write(rest);
-    }
+    if (rest.length > 0) await this.tcpWriter.write(rest);
+  }
+
+  async handleStartMux() {
+    this.stage = "mux";
+  }
+
+  async handleStartUoT() {
+    throw new Error("UoT is not supported on Cloudflare Workers: outbound UDP sockets are unavailable");
   }
 
   startOutboundPump() {
@@ -220,9 +286,11 @@ class SudokuWorkerSession {
           const { value, done } = await this.tcpReader.read();
           if (done) break;
           if (value && value.length > 0) {
-            await this.sendPlain(value);
+            await this.enqueueSendPlain(value);
           }
         }
+        await this.outboundChain;
+        await this.flushDownlink();
         this.close(1000, "tcp closed");
       } catch (error) {
         this.fail(error);
@@ -230,10 +298,124 @@ class SudokuWorkerSession {
     })();
   }
 
-  async sendPlain(bytes) {
+  async handleMuxFrame(frame) {
+    switch (frame.frameType) {
+      case 0x01:
+        await this.openMuxStream(frame.streamId, frame.payload);
+        break;
+      case 0x02:
+        await this.writeMuxStream(frame.streamId, frame.payload);
+        break;
+      case 0x03:
+        await this.closeMuxStream(frame.streamId);
+        break;
+      case 0x04:
+        await this.resetMuxStream(frame.streamId, new TextDecoder().decode(frame.payload));
+        break;
+      default:
+        throw new Error(`unknown mux frame type: ${frame.frameType}`);
+    }
+  }
+
+  async openMuxStream(streamId, payload) {
+    if (!streamId) {
+      await this.sendMuxReset(streamId, "invalid stream id");
+      return;
+    }
+    if (this.muxStreams.has(streamId)) {
+      await this.sendMuxReset(streamId, "stream already exists");
+      return;
+    }
+    const targetAddress = decodeAddress(payload);
+    const { host, port } = splitHostPort(targetAddress);
+    const socket = connect({ hostname: host, port });
+    const stream = {
+      id: streamId,
+      socket,
+      writer: socket.writable.getWriter(),
+      reader: socket.readable.getReader(),
+      closed: false,
+    };
+    this.muxStreams.set(streamId, stream);
+    this.startMuxOutboundPump(stream);
+  }
+
+  async writeMuxStream(streamId, payload) {
+    const stream = this.muxStreams.get(streamId);
+    if (!stream) return;
+    if (payload.length === 0) return;
+    await stream.writer.write(payload);
+  }
+
+  async closeMuxStream(streamId) {
+    const stream = this.muxStreams.get(streamId);
+    if (!stream) return;
+    this.muxStreams.delete(streamId);
+    stream.closed = true;
+    try {
+      stream.reader.releaseLock();
+      stream.writer.releaseLock();
+      stream.socket.close();
+    } catch {}
+  }
+
+  async resetMuxStream(streamId) {
+    await this.closeMuxStream(streamId);
+  }
+
+  startMuxOutboundPump(stream) {
+    stream.pumpPromise = (async () => {
+      try {
+        while (!this.closed && !stream.closed) {
+          const { value, done } = await stream.reader.read();
+          if (done) break;
+          if (value && value.length > 0) {
+            await this.enqueueSendPlain(buildMuxFrame(0x02, stream.id, value));
+          }
+        }
+        if (!this.closed) {
+          await this.enqueueSendPlain(buildMuxFrame(0x03, stream.id));
+        }
+      } catch (error) {
+        if (!this.closed) {
+          await this.sendMuxReset(stream.id, error instanceof Error ? error.message : String(error));
+        }
+      } finally {
+        await this.closeMuxStream(stream.id);
+      }
+    })();
+  }
+
+  async sendMuxReset(streamId, reason = "reset") {
+    const payload = new TextEncoder().encode(reason || "reset");
+    await this.enqueueSendPlain(buildMuxFrame(0x04, streamId, payload));
+    await this.enqueueSendPlain(buildMuxFrame(0x03, streamId));
+  }
+
+  enqueueSendPlain(bytes) {
+    const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const op = this.outboundChain.then(() => this.sendPlainNow(data));
+    this.outboundChain = op.catch((error) => {
+      this.fail(error);
+    });
+    return op;
+  }
+
+  async sendPlainNow(bytes) {
+    if (this.closed || bytes.length === 0) return;
     const recordBytes = await this.record.encode(bytes);
-    const sudokuBytes = encodeSudokuBytes(this.settings.table, recordBytes);
-    if (!this.closed) this.ws.send(sudokuBytes);
+    const downlinkBytes = this.settings.enablePureDownlink
+      ? encodeSudokuBytes(this.settings.downlinkTable, recordBytes)
+      : this.packedEncoder.encode(recordBytes);
+    if (!this.closed && downlinkBytes.length > 0) {
+      this.ws.send(downlinkBytes);
+    }
+  }
+
+  async flushDownlink() {
+    if (this.closed || this.settings.enablePureDownlink || !this.packedEncoder) return;
+    const tail = this.packedEncoder.flush();
+    if (!this.closed && tail.length > 0) this.ws.send(tail);
   }
 
   fail(error) {
@@ -244,6 +426,14 @@ class SudokuWorkerSession {
   close(code = 1000, reason = "closed") {
     if (this.closed) return;
     this.closed = true;
+    try {
+      for (const stream of this.muxStreams.values()) {
+        stream.reader?.releaseLock();
+        stream.writer?.releaseLock();
+        stream.socket?.close();
+      }
+      this.muxStreams.clear();
+    } catch {}
     try {
       this.tcpReader?.releaseLock();
       this.tcpWriter?.releaseLock();
@@ -259,14 +449,22 @@ async function prepareEarlyUpgrade(settings, url) {
   const earlyEncoded = url.searchParams.get("ed");
   if (!earlyEncoded) return null;
   const earlyPayload = decodeBase64Url(earlyEncoded);
-  const sudokuDecoded = decodeSudokuBytes(settings.table, newSudokuDecodeState(), earlyPayload);
+  const sudokuDecoded = decodeSudokuBytes(settings.uplinkTable, newSudokuDecodeState(), earlyPayload);
   const prepared = await processEarlyClientPayload({
     sharedKey: settings.sharedKey,
     aead: settings.aead,
     payload: sudokuDecoded,
+    expectedTableHint: settings.uplinkTable.hint,
   });
+  let responsePayload;
+  if (settings.enablePureDownlink) {
+    responsePayload = encodeSudokuBytes(settings.uplinkTable, prepared.responsePayload);
+  } else {
+    const encoder = new PackedDownlinkEncoder(settings.uplinkTable, 0, 0);
+    responsePayload = concatChunks([encoder.encode(prepared.responsePayload), encoder.flush()]);
+  }
   return {
-    responseHeader: encodeBase64Url(encodeSudokuBytes(settings.table, prepared.responsePayload)),
+    responseHeader: encodeBase64Url(responsePayload),
     sendBase: prepared.sessionSendBase,
     recvBase: prepared.sessionRecvBase,
     stage: "open",
@@ -274,7 +472,7 @@ async function prepareEarlyUpgrade(settings, url) {
 }
 
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request, env) {
     let settings;
     try {
       settings = await loadSettings(env, request.url);
@@ -306,7 +504,6 @@ export default {
       });
       server.addEventListener("close", () => session.close(1000, "client closed"));
       server.addEventListener("error", () => session.fail(new Error("websocket error")));
-      if (session.pumpPromise) ctx.waitUntil(session.pumpPromise);
       const headers = new Headers();
       if (earlyUpgrade?.responseHeader) headers.set("X-Sudoku-Early", earlyUpgrade.responseHeader);
       return new Response(null, { status: 101, webSocket: client, headers });
