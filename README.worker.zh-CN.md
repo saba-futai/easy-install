@@ -1,6 +1,6 @@
 # Sudoku Pure Cloudflare Worker 部署
 
-纯 Cloudflare Worker 的 Sudoku 服务端实现，当前协议对齐到 `sudoku v0.4.0`。
+纯 Cloudflare Worker 的 Sudoku 服务端实现。
 
 ## 当前支持
 
@@ -68,7 +68,7 @@ node cf-worker/tools/build-one-line-worker.mjs
 | --- | --- | --- |
 | `SUDOKU_MANAGE_TOKEN` | `my-secret` | 管理页路径令牌 |
 | `SUDOKU_PUBLIC_HOST` | `sudoku.example.com` | 对外给客户端展示的域名 |
-| `SUDOKU_HTTP_MASK_PATH_ROOT` | `aabbcc` | 可选固定 WS 路径前缀；未设置时会按 `SUDOKU_KEY` 稳定派生随机 `6-10` 位小写字母 |
+| `SUDOKU_HTTP_MASK_PATH_ROOT` | `/aabbcc` | 可选固定 WS 路径前缀；未设置时会按 `SUDOKU_KEY` 稳定派生随机 `6-10` 位小写字母并以 `/` 开头导出 |
 | `SUDOKU_CLIENT_PORT` | `10233` | 导出的客户端本地 mixed 端口 |
 | `SUDOKU_HTTP_MASK_HOST` | `cdn.example.com` | 可选，覆盖客户端 Host/SNI |
 | `SUDOKU_NODE_NAME` | `sudoku-cf-worker-pure` | Clash 节点名 |
@@ -84,7 +84,7 @@ node cf-worker/tools/build-one-line-worker.mjs
 
 - 域名是 `sudoku.example.com`
 - `SUDOKU_MANAGE_TOKEN=my-secret`
-- 未显式设置 `SUDOKU_HTTP_MASK_PATH_ROOT`，按 key 稳定派生出一个随机段，例如 `aabbcc`
+- 未显式设置 `SUDOKU_HTTP_MASK_PATH_ROOT`，按 key 稳定派生出一个随机段，例如 `/aabbcc`
 
 则：
 

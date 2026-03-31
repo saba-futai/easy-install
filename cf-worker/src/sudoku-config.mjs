@@ -7,7 +7,7 @@ export function normalizePathRoot(value) {
   if (!/^[A-Za-z0-9_-]+$/.test(raw)) {
     throw new Error("SUDOKU_HTTP_MASK_PATH_ROOT must be [A-Za-z0-9_-]");
   }
-  return raw;
+  return `/${raw}`;
 }
 
 export function deriveRandomPathRoot(seed) {
@@ -37,11 +37,11 @@ export function deriveRandomPathRoot(seed) {
 export function resolvePathRoot(pathRoot, seed) {
   const normalized = normalizePathRoot(pathRoot);
   if (normalized) return normalized;
-  return deriveRandomPathRoot(seed);
+  return normalizePathRoot(deriveRandomPathRoot(seed));
 }
 
 export function buildWSPath(pathRoot) {
-  return pathRoot ? `/${pathRoot}/ws` : "/ws";
+  return pathRoot ? `${pathRoot}/ws` : "/ws";
 }
 
 export function buildClientConfig(options) {

@@ -458,9 +458,9 @@ async function prepareEarlyUpgrade(settings, url) {
   });
   let responsePayload;
   if (settings.enablePureDownlink) {
-    responsePayload = encodeSudokuBytes(settings.uplinkTable, prepared.responsePayload);
+    responsePayload = encodeSudokuBytes(settings.downlinkTable, prepared.responsePayload);
   } else {
-    const encoder = new PackedDownlinkEncoder(settings.uplinkTable, 0, 0);
+    const encoder = new PackedDownlinkEncoder(settings.downlinkTable, 0, 0);
     responsePayload = concatChunks([encoder.encode(prepared.responsePayload), encoder.flush()]);
   }
   return {

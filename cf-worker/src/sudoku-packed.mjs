@@ -156,6 +156,14 @@ export class PackedDownlinkEncoder {
       }
     }
 
+    if (this.bitCount > 0) {
+      const group = Number((this.bitBuf << BigInt(6 - this.bitCount)) & 0x3fn);
+      this.bitBuf = 0n;
+      this.bitCount = 0;
+      this.appendGroup(out, group);
+      out.push(this.padMarker);
+    }
+
     this.maybeAddPadding(out);
     return Uint8Array.from(out);
   }

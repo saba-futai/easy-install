@@ -10,7 +10,7 @@ function usage() {
 
 Options:
   --local-port <port>         Client local port, default 10233
-  --path-root <segment>       Optional fixed HTTP mask path root; omitted => derive a stable random segment from key
+  --path-root <segment>       Optional fixed HTTP mask path root; export uses /<segment>, omitted => derive a stable random segment from key
   --host-header <host>        Optional HTTP Host/SNI override
   --aead <name>               AEAD, default aes-128-gcm
   --ascii <mode>              prefer_entropy / prefer_ascii / up_*_down_*, default prefer_entropy
