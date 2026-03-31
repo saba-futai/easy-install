@@ -1,43 +1,10 @@
 import { joinHostPort, splitHostPort } from "./sudoku-protocol.mjs";
 
 const remoteCache = new Map();
-const CFNEW_DEFAULT_PREFERRED_RAW = `
-ProxyIP.HK.CMLiussss.net:443#HK
-ProxyIP.US.CMLiussss.net:443#US
-ProxyIP.SG.CMLiussss.net:443#SG
-ProxyIP.JP.CMLiussss.net:443#JP
-ProxyIP.KR.CMLiussss.net:443#KR
-ProxyIP.DE.CMLiussss.net:443#DE
-ProxyIP.SE.CMLiussss.net:443#SE
-ProxyIP.NL.CMLiussss.net:443#NL
-ProxyIP.FI.CMLiussss.net:443#FI
-ProxyIP.GB.CMLiussss.net:443#GB
-ProxyIP.Oracle.cmliussss.net:443#Oracle
-ProxyIP.DigitalOcean.CMLiussss.net:443#DigitalOcean
-ProxyIP.Vultr.CMLiussss.net:443#Vultr
-ProxyIP.Multacom.CMLiussss.net:443#Multacom
-cloudflare.182682.xyz:443#CF
-speed.marisalnc.com:443#CF
-freeyx.cloudflare88.eu.org:443#CF
-bestcf.top:443#CF
-cdn.2020111.xyz:443#CF
-cfip.cfcdn.vip:443#CF
-cf.0sm.com:443#CF
-cf.090227.xyz:443#CF
-cf.zhetengsha.eu.org:443#CF
-cloudflare.9jy.cc:443#CF
-cf.zerone-cdn.pp.ua:443#CF
-cfip.1323123.xyz:443#CF
-cnamefuckxxs.yuchen.icu:443#CF
-cloudflare-ip.mofashi.ltd:443#CF
-115155.xyz:443#CF
-cname.xirancdn.us:443#CF
-f3058171cad.002404.xyz:443#CF
-8.889288.xyz:443#CF
-cdn.tzpro.xyz:443#CF
-cf.877771.xyz:443#CF
-xn--b6gac.eu.org:443#CF
-`.trim();
+const DEFAULT_WETEST_SOURCES = [
+  "https://www.wetest.vip/page/cloudflare/address_v4.html",
+  "https://www.wetest.vip/page/cloudflare/address_v6.html",
+];
 
 function uniqByAddress(entries) {
   const seen = new Set();
@@ -165,9 +132,48 @@ function parseJsonEntries(input, defaultPort = 443) {
   return [];
 }
 
+function stripHtmlTags(value) {
+  return String(value || "").replace(/<[^>]*>/g, "").replace(/&nbsp;/gi, " ").trim();
+}
+
+function parseWetestHtml(input, defaultPort = 443) {
+  const html = String(input || "");
+  if (!html.includes('data-label="优选地址"')) return [];
+
+  const results = [];
+  const rowRegex = /<tr[\s\S]*?<\/tr>/gi;
+  const cellRegex = /<td[^>]*data-label="线路名称"[^>]*>([\s\S]*?)<\/td>[\s\S]*?<td[^>]*data-label="优选地址"[^>]*>([\d.:a-fA-F]+)<\/td>[\s\S]*?<td[^>]*data-label="数据中心"[^>]*>([\s\S]*?)<\/td>/i;
+
+  let row;
+  while ((row = rowRegex.exec(html)) !== null) {
+    const match = row[0].match(cellRegex);
+    if (!match) continue;
+    const lineName = stripHtmlTags(match[1]);
+    const host = stripHtmlTags(match[2]);
+    const colo = stripHtmlTags(match[3]);
+    const address = normalizeAddress(host, defaultPort);
+    if (!address) continue;
+    const name = [lineName, colo].filter(Boolean).join(" | ");
+    results.push({
+      address,
+      name,
+      latencyMs: null,
+      downloadMbps: null,
+      score: null,
+      sourceIndex: results.length,
+    });
+  }
+
+  return uniqByAddress(results);
+}
+
 export function parsePreferredIpList(input, defaultPort = 443) {
   const raw = String(input || "").trim();
   if (!raw) return [];
+  if (raw.includes('data-label="优选地址"')) {
+    const parsed = parseWetestHtml(raw, defaultPort);
+    if (parsed.length > 0) return parsed;
+  }
   if (raw.startsWith("[") || raw.startsWith("{")) {
     const parsed = parseJsonEntries(raw, defaultPort);
     if (parsed.length > 0) return parsed;
@@ -187,7 +193,35 @@ export function parsePreferredIpList(input, defaultPort = 443) {
   return uniqByAddress(entries);
 }
 
-export const CFNEW_DEFAULT_PREFERRED_ENTRIES = parsePreferredIpList(CFNEW_DEFAULT_PREFERRED_RAW, 443);
+export const CFNEW_DEFAULT_PREFERRED_ENTRIES = [];
+
+async function loadBuiltInPreferredEntries(defaultPort, cacheTtlMs) {
+  const cacheKey = "__builtin_wetest__";
+  const now = Date.now();
+  const cached = remoteCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return cached.entries;
+  }
+
+  const settled = await Promise.allSettled(
+    DEFAULT_WETEST_SOURCES.map((source) =>
+      fetch(source, {
+        headers: { accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8" },
+        cf: { cacheTtl: 0, cacheEverything: false },
+      }).then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return parseWetestHtml(await response.text(), defaultPort);
+      }),
+    ),
+  );
+
+  const entries = uniqByAddress(
+    settled.flatMap((result) => (result.status === "fulfilled" ? result.value : [])),
+  ).map((entry, index) => ({ ...entry, sourceIndex: index }));
+
+  remoteCache.set(cacheKey, { entries, expiresAt: now + Math.max(cacheTtlMs, 0) });
+  return entries;
+}
 
 export function isLiteralIpHost(host) {
   const raw = String(host || "").trim();
@@ -231,9 +265,9 @@ async function loadFromRemoteUrl(source, defaultPort, cacheTtlMs) {
   return result;
 }
 
-export async function loadPreferredIpPool({ inlineList = "", sourceUrl = "", defaultPort = 443, cacheTtlMs = 0, kv = null, kvKey = "", defaultEntries = [] }) {
+export async function loadPreferredIpPool({ inlineList = "", sourceUrl = "", defaultPort = 443, cacheTtlMs = 0, kv = null, kvKey = "", defaultEntries = [], enableBuiltIn = false }) {
   const inlineEntries = parsePreferredIpList(inlineList, defaultPort);
-  const builtInEntries = Array.isArray(defaultEntries) ? defaultEntries : [];
+  let builtInEntries = Array.isArray(defaultEntries) ? defaultEntries : [];
   let kvEntries = [];
   const kvStorageKey = String(kvKey || "").trim();
   if (kv && kvStorageKey) {
@@ -242,10 +276,15 @@ export async function loadPreferredIpPool({ inlineList = "", sourceUrl = "", def
     } catch {}
   }
   const source = String(sourceUrl || "").trim();
+  if (!source && enableBuiltIn && kvEntries.length === 0 && inlineEntries.length === 0 && builtInEntries.length === 0) {
+    try {
+      builtInEntries = await loadBuiltInPreferredEntries(defaultPort, cacheTtlMs);
+    } catch {}
+  }
   if (!source) {
-      return {
+    return {
       entries: uniqByAddress([...kvEntries, ...inlineEntries, ...builtInEntries]),
-      preferredSource: kvEntries.length > 0 ? "kv" : inlineEntries.length > 0 ? "inline" : builtInEntries.length > 0 ? "cfnew-default" : "",
+      preferredSource: kvEntries.length > 0 ? "kv" : inlineEntries.length > 0 ? "inline" : builtInEntries.length > 0 ? "builtin-wetest" : "",
       preferredError: "",
     };
   }
@@ -260,7 +299,7 @@ export async function loadPreferredIpPool({ inlineList = "", sourceUrl = "", def
   } catch (error) {
     return {
       entries: uniqByAddress([...kvEntries, ...inlineEntries, ...builtInEntries]),
-      preferredSource: kvEntries.length > 0 ? "kv" : inlineEntries.length > 0 ? "inline" : builtInEntries.length > 0 ? "cfnew-default" : "",
+      preferredSource: kvEntries.length > 0 ? "kv" : inlineEntries.length > 0 ? "inline" : builtInEntries.length > 0 ? "builtin-wetest" : "",
       preferredError: error instanceof Error ? error.message : String(error),
     };
   }

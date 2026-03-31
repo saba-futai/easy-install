@@ -1,7 +1,7 @@
 import { connect } from "cloudflare:sockets";
 
 import { buildClientConfig, buildClashNode, buildShortLinkFromClientConfig, buildWSPath, resolvePathRoot } from "./sudoku-config.mjs";
-import { CFNEW_DEFAULT_PREFERRED_ENTRIES, filterPreferredEntries, loadPreferredIpPool, normalizePreferredIpStrategy, parsePreferredIpList, pickPreferredEntry } from "./preferred-ip.mjs";
+import { filterPreferredEntries, loadPreferredIpPool, normalizePreferredIpStrategy, parsePreferredIpList, pickPreferredEntry } from "./preferred-ip.mjs";
 import { PackedDownlinkEncoder } from "./sudoku-packed.mjs";
 import {
   ByteQueue,
@@ -100,6 +100,7 @@ async function loadSettings(env, requestUrl) {
   const enablePreferredIPs = parseBoolean(env.SUDOKU_ENABLE_PREFERRED_IP || env.SUDOKU_EPI, true);
   const enablePreferredDomains = parseBoolean(env.SUDOKU_ENABLE_PREFERRED_DOMAIN || env.SUDOKU_EPD, true);
   const preferredIpCacheMs = Math.max(0, Number.parseInt(String(env.SUDOKU_PREFERRED_IP_CACHE_MS || env.SUDOKU_YX_CACHE_MS || "60000"), 10) || 0);
+  const enableBuiltInPreferred = parseBoolean(env.SUDOKU_ENABLE_BUILTIN_PREFERRED ?? env.SUDOKU_EGI, true);
   if (!enablePureDownlink && aead === "none") {
     throw new Error("packed downlink requires AEAD");
   }
@@ -125,6 +126,7 @@ async function loadSettings(env, requestUrl) {
     enablePreferredIPs,
     enablePreferredDomains,
     preferredIpCacheMs,
+    enableBuiltInPreferred,
     preferredKv: env.C || env.SUDOKU_KV || null,
     preferredKvKey: String(env.SUDOKU_PREFERRED_IP_KV_KEY || "sudoku:preferred_ips").trim() || "sudoku:preferred_ips",
     nodeName: String(env.SUDOKU_NODE_NAME || "sudoku-cf-worker-pure").trim() || "sudoku-cf-worker-pure",
@@ -148,7 +150,8 @@ async function resolveExportBundle(settings, request) {
     cacheTtlMs: settings.preferredIpCacheMs,
     kv: settings.preferredKv,
     kvKey: settings.preferredKvKey,
-    defaultEntries: CFNEW_DEFAULT_PREFERRED_ENTRIES,
+    defaultEntries: [],
+    enableBuiltIn: settings.enableBuiltInPreferred,
   });
   const effectiveRegion = settings.preferredRegion || detectPreferredRegion(request);
   const eligibleEntries = settings.disablePreferred
@@ -202,7 +205,9 @@ function renderPage(settings, requestUrl, exportBundle) {
     ? `优选池可用 ${preferredCount} 条 / 总计 ${preferredTotalCount} 条，策略 <code>${htmlEscape(settings.preferredIpStrategy)}</code>${effectiveRegion ? `，地区过滤 <code>${htmlEscape(effectiveRegion)}</code>` : ""}${preferredSource ? `，来源 <code>${htmlEscape(preferredSource)}</code>` : ""}。`
     : preferredError
       ? `优选池不可用，已回退到域名直连。错误：<code>${htmlEscape(preferredError)}</code>`
-      : "未配置优选 IP，当前为域名直连导出。";
+      : settings.enableBuiltInPreferred
+        ? "默认优选源当前不可用，已回退到域名直连导出。"
+        : "未配置优选源，当前为域名直连导出。";
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>

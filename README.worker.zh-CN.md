@@ -11,7 +11,7 @@
 - `OpenTCP`
 - `StartMux` / HTTPMask session mux
 - `ascii` 对称模式和方向模式：`prefer_entropy`、`prefer_ascii`、`up_*_down_*`
-- 导出时动态优选 IP：支持内置列表和远程列表 URL
+- 导出时动态优选 IP：支持手动列表、远程列表 URL、可选 KV 管理
 - 可选 KV 持久化优选池，并提供 API 管理入口
 
 
@@ -73,6 +73,7 @@ node cf-worker/tools/build-one-line-worker.mjs
 | `SUDOKU_PREFERRED_IP_STRATEGY` | `best` | `best / first / rotate / random`，默认 `best`；优先按 `score`，其次按更低延迟、更高速度 |
 | `SUDOKU_PREFERRED_IP_CACHE_MS` | `60000` | 远程优选列表缓存毫秒数，默认 60 秒 |
 | `SUDOKU_PREFERRED_IP_KV_KEY` | `sudoku:preferred_ips` | 可选，KV 中保存优选池的 key |
+| `SUDOKU_ENABLE_BUILTIN_PREFERRED` | `true` | 默认开启内置优选；未显式配置优选源时，会自动抓取可直接使用的 Cloudflare 优选 IP 列表，失败时回退到你的域名 |
 | `SUDOKU_CLIENT_PORT` | `10233` | 导出的客户端本地 mixed 端口 |
 | `SUDOKU_HTTP_MASK_HOST` | `cdn.example.com` | 可选，覆盖客户端 Host/SNI |
 | `SUDOKU_NODE_NAME` | `sudoku-cf-worker-pure` | Clash 节点名 |
@@ -115,6 +116,8 @@ node cf-worker/tools/build-one-line-worker.mjs
 - `tls = true`
 
 也就是说，客户端实际连优选 IP，但 `Host/SNI` 仍然走你的域名。
+
+如果你没有设置 `SUDOKU_PREFERRED_IPS`、`SUDOKU_PREFERRED_IP_URL`，也没有通过 KV API 写入优选池，Worker 会默认抓取一组可直接使用的 Cloudflare 优选 IP 并导出；抓取失败时才回退到你的 `SUDOKU_PUBLIC_HOST`。如果你不想用这个默认行为，可以把 `SUDOKU_ENABLE_BUILTIN_PREFERRED=false`。
 
 
 ## 本地生成短链接
