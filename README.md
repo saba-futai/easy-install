@@ -112,8 +112,9 @@ Cloudflare Worker 入口部署请看：[README.worker.zh-CN.md](./README.worker.
 | 配置项 | 默认值 |
 |--------|--------|
 | 端口 | `50001-65535` 内随机可用端口 |
-| 模式 | `prefer_entropy` (低熵模式) |
+| 模式 | `up_ascii_down_entropy` |
 | AEAD | `chacha20-poly1305` |
+| X/P/V 表 | 随机 `custom_table` |
 | 纯 Sudoku 下行 | `false` (带宽优化模式) |
 | HTTP 掩码 | `true` (`auto`) |
 
@@ -188,7 +189,7 @@ sudoku://eyJoIjoiMS4yLjMuNCIsInAiOjEwMjMzLC...
   padding-min: 2
   padding-max: 7
   custom-table: xpxvvpvv
-  table-type: prefer_entropy
+  table-type: up_ascii_down_entropy
 	  http-mask: true
 	  http-mask-mode: ws
 	  http-mask-tls: false
@@ -349,8 +350,9 @@ Open Sudodroid and import nodes using one of these methods:
 | Setting | Default |
 |---------|---------|
 | Port | Random available port in `50001-65535` |
-| Mode | `prefer_entropy` (low entropy) |
+| Mode | `up_ascii_down_entropy` |
 | AEAD | `chacha20-poly1305` |
+| X/P/V Table | Random `custom_table` |
 | Pure Sudoku Downlink | `false` (bandwidth optimized) |
 | HTTP Mask | `true` (`auto`) |
 
@@ -423,7 +425,7 @@ Import this `sudoku://...` short link in the desktop GUI client (see "Desktop GU
   padding-min: 2
   padding-max: 7
   custom-table: xpxvvpvv
-  table-type: prefer_entropy
+  table-type: up_ascii_down_entropy
 	  http-mask: true
 	  http-mask-mode: ws
 	  http-mask-tls: false

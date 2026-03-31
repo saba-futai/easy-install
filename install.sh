@@ -58,6 +58,7 @@ EXPORT_STATE_FILE="${CONFIG_DIR}/export-state.env"
 SERVICE_NAME="sudoku"
 FALLBACK_SERVICE_NAME="sudoku-fallback"
 FALLBACK_LIB_DIR="/usr/local/lib/sudoku-fallback"
+DEFAULT_ASCII_MODE="up_ascii_down_entropy"
 CUSTOM_TABLE=""
 DISABLE_HTTP_MASK="false"
 HTTP_MASK_MODE="auto"
@@ -1433,7 +1434,7 @@ create_config() {
   "key": "${MASTER_PUBLIC_KEY}",
   "aead": "chacha20-poly1305",
   "suspicious_action": "fallback",
-  "ascii": "prefer_entropy",
+  "ascii": "${DEFAULT_ASCII_MODE}",
   "padding_min": 2,
   "padding_max": 7,
   "custom_table": "${CUSTOM_TABLE}",
@@ -1540,7 +1541,7 @@ generate_short_link() {
   "server_address": "${server_address}",
   "key": "${AVAILABLE_PRIVATE_KEY}",
   "aead": "chacha20-poly1305",
-  "ascii": "prefer_entropy",
+  "ascii": "${DEFAULT_ASCII_MODE}",
   "padding_min": 5,
   "padding_max": 15,
   "custom_table": "${CUSTOM_TABLE}",
@@ -1595,7 +1596,7 @@ generate_clash_config() {
     fi
 
     lines+=(
-        "  table-type: prefer_entropy"
+        "  table-type: ${DEFAULT_ASCII_MODE}"
         "  http-mask: ${http_mask_yaml}"
         "  http-mask-mode: ${CLIENT_HTTP_MASK_MODE}"
         "  http-mask-tls: ${HTTP_MASK_TLS}"
