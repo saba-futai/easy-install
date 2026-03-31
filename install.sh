@@ -1559,7 +1559,7 @@ generate_short_link() {
 EOF
 
     export_output=$("${INSTALL_DIR}/sudoku" -c "${temp_cfg}" -export-link 2>&1 || true)
-    SHORT_LINK=$(echo "${export_output}" | awk -F 'Short link: ' '/Short link: /{print $2; exit}')
+    SHORT_LINK=$(printf '%s\n' "${export_output}" | grep -Eo 'sudoku://[^[:space:]]+' | tail -n 1)
     rm -rf "${temp_dir}"
 
     if [[ -z "${SHORT_LINK}" ]]; then
