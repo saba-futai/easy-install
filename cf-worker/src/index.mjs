@@ -1,6 +1,7 @@
 import { connect } from "cloudflare:sockets";
 
 import { buildClientConfig, buildClashNode, buildShortLinkFromClientConfig, buildWSPath, resolvePathRoot } from "./sudoku-config.mjs";
+import { filterPreferredEntries, loadPreferredIpPool, normalizePreferredIpStrategy, parsePreferredIpList, pickPreferredEntry } from "./preferred-ip.mjs";
 import { PackedDownlinkEncoder } from "./sudoku-packed.mjs";
 import {
   ByteQueue,
@@ -63,6 +64,12 @@ async function loadSettings(env, requestUrl) {
   const manageToken = String(env.SUDOKU_MANAGE_TOKEN || "").trim();
   const enablePureDownlink = parseBoolean(env.SUDOKU_ENABLE_PURE_DOWNLINK, false);
   const httpMaskMultiplex = normalizeMultiplexMode(env.SUDOKU_HTTP_MASK_MULTIPLEX || "on");
+  const preferredIpStrategy = normalizePreferredIpStrategy(env.SUDOKU_PREFERRED_IP_STRATEGY || env.SUDOKU_YX_STRATEGY || "best");
+  const preferredRegion = String(env.SUDOKU_PREFERRED_REGION || env.SUDOKU_WK || "").trim().toUpperCase();
+  const disablePreferred = parseBoolean(env.SUDOKU_DISABLE_PREFERRED || env.SUDOKU_YXBY, false);
+  const enablePreferredIPs = parseBoolean(env.SUDOKU_ENABLE_PREFERRED_IP || env.SUDOKU_EPI, true);
+  const enablePreferredDomains = parseBoolean(env.SUDOKU_ENABLE_PREFERRED_DOMAIN || env.SUDOKU_EPD, true);
+  const preferredIpCacheMs = Math.max(0, Number.parseInt(String(env.SUDOKU_PREFERRED_IP_CACHE_MS || env.SUDOKU_YX_CACHE_MS || "60000"), 10) || 0);
   if (!enablePureDownlink && aead === "none") {
     throw new Error("packed downlink requires AEAD");
   }
@@ -79,21 +86,23 @@ async function loadSettings(env, requestUrl) {
     manageToken,
     enablePureDownlink,
     httpMaskMultiplex,
+    httpMaskHost: String(env.SUDOKU_HTTP_MASK_HOST || "").trim(),
+    preferredIpInline: String(env.SUDOKU_PREFERRED_IPS || env.SUDOKU_YX || "").trim(),
+    preferredIpUrl: String(env.SUDOKU_PREFERRED_IP_URL || env.SUDOKU_YX_URL || "").trim(),
+    preferredIpStrategy,
+    preferredRegion,
+    disablePreferred,
+    enablePreferredIPs,
+    enablePreferredDomains,
+    preferredIpCacheMs,
+    preferredKv: env.C || env.SUDOKU_KV || null,
+    preferredKvKey: String(env.SUDOKU_PREFERRED_IP_KV_KEY || "sudoku:preferred_ips").trim() || "sudoku:preferred_ips",
     nodeName: String(env.SUDOKU_NODE_NAME || "sudoku-cf-worker-pure").trim() || "sudoku-cf-worker-pure",
     wsPath: buildWSPath(pathRoot),
+    pathRoot,
     uplinkTable,
     downlinkTable,
-    clientConfig: buildClientConfig({
-      publicHost,
-      localPort: env.SUDOKU_CLIENT_PORT || "10233",
-      key: sharedKey,
-      aead,
-      ascii,
-      enablePureDownlink,
-      httpMaskHost: String(env.SUDOKU_HTTP_MASK_HOST || "").trim(),
-      httpMaskMultiplex,
-      pathRoot,
-    }),
+    clientPort: env.SUDOKU_CLIENT_PORT || "10233",
   };
 }
 
@@ -101,13 +110,66 @@ function configBase(origin, manageToken) {
   return manageToken ? `${origin}/${manageToken}` : origin;
 }
 
-function renderPage(settings, requestUrl) {
-  const shortLink = buildShortLinkFromClientConfig(settings.clientConfig);
-  const clashNode = buildClashNode(settings.clientConfig, settings.nodeName);
-  const clientJson = JSON.stringify(settings.clientConfig, null, 2);
+async function resolveExportBundle(settings, request) {
+  const preferredPool = await loadPreferredIpPool({
+    inlineList: settings.preferredIpInline,
+    sourceUrl: settings.preferredIpUrl,
+    defaultPort: 443,
+    cacheTtlMs: settings.preferredIpCacheMs,
+    kv: settings.preferredKv,
+    kvKey: settings.preferredKvKey,
+  });
+  const eligibleEntries = settings.disablePreferred
+    ? []
+    : filterPreferredEntries(preferredPool.entries, {
+        enableIPs: settings.enablePreferredIPs,
+        enableDomains: settings.enablePreferredDomains,
+        region: settings.preferredRegion,
+      });
+  const selectedPreferred = pickPreferredEntry(
+    eligibleEntries,
+    settings.preferredIpStrategy,
+    `${request.headers.get("cf-connecting-ip") || ""}|${request.headers.get("user-agent") || ""}`,
+  );
+  const clientConfig = buildClientConfig({
+    publicHost: settings.publicHost,
+    serverAddress: selectedPreferred?.address || "",
+    localPort: settings.clientPort,
+    key: settings.sharedKey,
+    aead: settings.aead,
+    ascii: settings.ascii,
+    enablePureDownlink: settings.enablePureDownlink,
+    httpMaskHost: settings.httpMaskHost || (selectedPreferred ? settings.publicHost : ""),
+    httpMaskMultiplex: settings.httpMaskMultiplex,
+    pathRoot: settings.pathRoot,
+  });
+  return {
+    clientConfig,
+    clashNode: buildClashNode(clientConfig, settings.nodeName),
+    shortLink: buildShortLinkFromClientConfig(clientConfig),
+    selectedPreferred,
+    preferredCount: eligibleEntries.length,
+    preferredTotalCount: preferredPool.entries.length,
+    preferredSource: preferredPool.preferredSource,
+    preferredError: preferredPool.preferredError,
+  };
+}
+
+function renderPage(settings, requestUrl, exportBundle) {
+  const { clientConfig, clashNode, shortLink, selectedPreferred, preferredCount, preferredTotalCount, preferredSource, preferredError } = exportBundle;
+  const clientJson = JSON.stringify(clientConfig, null, 2);
   const url = new URL(requestUrl);
   const base = configBase(url.origin, settings.manageToken);
   const downlinkMode = settings.enablePureDownlink ? "pure_downlink" : "packed_downlink";
+  const exportTarget = selectedPreferred ? `${selectedPreferred.address}${selectedPreferred.name ? ` (${selectedPreferred.name})` : ""}` : `${settings.publicHost}:443`;
+  const exportHint = selectedPreferred
+    ? `当前导出节点使用优选入口 <code>${htmlEscape(exportTarget)}</code>，并自动把 <code>Host/SNI</code> 设为 <code>${htmlEscape(clientConfig.httpmask.host || settings.publicHost)}</code>。`
+    : "当前导出节点直接使用你的域名作为入口。";
+  const preferredMeta = preferredCount > 0
+    ? `优选池可用 ${preferredCount} 条 / 总计 ${preferredTotalCount} 条，策略 <code>${htmlEscape(settings.preferredIpStrategy)}</code>${settings.preferredRegion ? `，地区过滤 <code>${htmlEscape(settings.preferredRegion)}</code>` : ""}${preferredSource ? `，来源 <code>${htmlEscape(preferredSource)}</code>` : ""}。`
+    : preferredError
+      ? `优选池不可用，已回退到域名直连。错误：<code>${htmlEscape(preferredError)}</code>`
+      : "未配置优选 IP，当前为域名直连导出。";
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -126,6 +188,8 @@ function renderPage(settings, requestUrl) {
 <body><main>
   <h1>Sudoku Pure Cloudflare Worker</h1>
   <p>当前实现是纯 Worker 版 Sudoku 服务端。入口固定为 <code>wss://${htmlEscape(settings.publicHost)}${htmlEscape(settings.wsPath)}</code>，当前参数为 <code>ws + tls + ${htmlEscape(settings.aead)} + ${htmlEscape(downlinkMode)}</code>。</p>
+  <p>${exportHint}</p>
+  <p>${preferredMeta}</p>
   <div class="grid">
     <section class="card"><div class="label">Short Link</div><pre>${htmlEscape(shortLink)}</pre></section>
     <section class="card"><div class="label">Client JSON</div><pre>${htmlEscape(clientJson)}</pre></section>
@@ -471,6 +535,50 @@ async function prepareEarlyUpgrade(settings, url) {
   };
 }
 
+async function handlePreferredIpApi(settings, request, url, basePath) {
+  const apiPath = `${basePath}/api/preferred-ips`;
+  if (url.pathname !== apiPath) return null;
+  if (!settings.manageToken) return textResponse("Forbidden", 403);
+  if (!settings.preferredKv || !settings.preferredKvKey) {
+    return textResponse("Preferred IP KV is not configured. Bind KV namespace as variable C or set SUDOKU_KV.", 501);
+  }
+
+  if (request.method === "GET") {
+    const stored = (await settings.preferredKv.get(settings.preferredKvKey, "text")) || "";
+    const entries = parsePreferredIpList(stored, 443);
+    return new Response(JSON.stringify({ entries, raw: stored }, null, 2), { headers: { "content-type": "application/json; charset=utf-8" } });
+  }
+
+  if (request.method === "DELETE") {
+    await settings.preferredKv.delete(settings.preferredKvKey);
+    return new Response(JSON.stringify({ ok: true, cleared: true }), { headers: { "content-type": "application/json; charset=utf-8" } });
+  }
+
+  if (request.method === "POST" || request.method === "PUT") {
+    const contentType = request.headers.get("content-type") || "";
+    const rawBody = await request.text();
+    let nextRaw = rawBody;
+    if (contentType.includes("application/json")) {
+      const payload = JSON.parse(rawBody || "{}");
+      if (Array.isArray(payload)) {
+        nextRaw = payload.join("\n");
+      } else if (Array.isArray(payload.entries)) {
+        nextRaw = payload.entries
+          .map((entry) => (typeof entry === "string" ? entry : entry?.address ? `${entry.address}${entry.name ? `#${entry.name}` : ""}` : ""))
+          .filter(Boolean)
+          .join("\n");
+      } else if (typeof payload.raw === "string") {
+        nextRaw = payload.raw;
+      }
+    }
+    const entries = parsePreferredIpList(nextRaw, 443);
+    await settings.preferredKv.put(settings.preferredKvKey, entries.map((entry) => `${entry.address}${entry.name ? `#${entry.name}` : ""}`).join("\n"));
+    return new Response(JSON.stringify({ ok: true, count: entries.length, entries }, null, 2), { headers: { "content-type": "application/json; charset=utf-8" } });
+  }
+
+  return textResponse("Method Not Allowed", 405);
+}
+
 export default {
   async fetch(request, env) {
     let settings;
@@ -509,23 +617,28 @@ export default {
       return new Response(null, { status: 101, webSocket: client, headers });
     }
 
+    const apiResponse = await handlePreferredIpApi(settings, request, url, basePath);
+    if (apiResponse) return apiResponse;
+
     if (request.method !== "GET") return textResponse("Method Not Allowed", 405);
+
+    const exportBundle = await resolveExportBundle(settings, request);
 
     if (url.pathname === "/") {
       if (settings.manageToken) return textResponse("Sudoku Pure Worker is running.");
-      return new Response(renderPage(settings, request.url), { headers: { "content-type": "text/html; charset=utf-8" } });
+      return new Response(renderPage(settings, request.url, exportBundle), { headers: { "content-type": "text/html; charset=utf-8" } });
     }
     if (url.pathname === basePath) {
-      return new Response(renderPage(settings, request.url), { headers: { "content-type": "text/html; charset=utf-8" } });
+      return new Response(renderPage(settings, request.url, exportBundle), { headers: { "content-type": "text/html; charset=utf-8" } });
     }
     if (url.pathname === `${basePath}/shortlink`) {
-      return textResponse(buildShortLinkFromClientConfig(settings.clientConfig));
+      return textResponse(exportBundle.shortLink);
     }
     if (url.pathname === `${basePath}/client.json`) {
-      return new Response(JSON.stringify(settings.clientConfig, null, 2), { headers: { "content-type": "application/json; charset=utf-8" } });
+      return new Response(JSON.stringify(exportBundle.clientConfig, null, 2), { headers: { "content-type": "application/json; charset=utf-8" } });
     }
     if (url.pathname === `${basePath}/clash.yaml`) {
-      return textResponse(buildClashNode(settings.clientConfig, settings.nodeName), 200, "text/yaml; charset=utf-8");
+      return textResponse(exportBundle.clashNode, 200, "text/yaml; charset=utf-8");
     }
     return textResponse("Not Found", 404);
   },

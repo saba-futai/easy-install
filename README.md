@@ -13,7 +13,7 @@
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
 ```
 
-Cloudflare Worker 入口部署请看：[README.worker.zh-CN.md](./README.worker.zh-CN.md)。如果用户没有 GitHub，也可以直接使用仓库里的单文件版 `cf-worker/dashboard/sudoku-worker.one.js` 粘贴到 Cloudflare Dashboard 的 Hello World Worker 中。
+Cloudflare Worker 入口部署请看：[README.worker.zh-CN.md](./README.worker.zh-CN.md)。如果用户没有 GitHub，也可以直接使用仓库里的单文件版 `cf-worker/dashboard/sudoku-worker.one.js` 粘贴到 Cloudflare Dashboard 的 Hello World Worker 中。Worker 版现已支持导出时动态优选 IP。
 
 ---
 

@@ -42,12 +42,13 @@ export class PackedDownlinkEncoder {
     this.padPool = Array.from(table.paddingPool).filter((b) => b !== this.padMarker);
     if (this.padPool.length === 0) this.padPool = [this.padMarker];
     this.paddingThreshold = pickPaddingThreshold(pMin, pMax);
+    this.paddingEnabled = this.paddingThreshold > 0n;
     this.bitBuf = 0n;
     this.bitCount = 0;
   }
 
   maybeAddPadding(out) {
-    if (shouldPad(this.paddingThreshold)) out.push(this.getPaddingByte());
+    if (this.paddingEnabled && shouldPad(this.paddingThreshold)) out.push(this.getPaddingByte());
   }
 
   appendGroup(out, group) {
@@ -85,7 +86,7 @@ export class PackedDownlinkEncoder {
       }
       effective += 1;
       if (effective >= gap) {
-        this.appendForcedPadding(out);
+      this.appendForcedPadding(out);
         effective = 0;
         gap = this.nextProtectedPrefixGap();
       }

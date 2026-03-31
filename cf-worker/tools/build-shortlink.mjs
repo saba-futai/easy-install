@@ -11,6 +11,7 @@ function usage() {
 Options:
   --local-port <port>         Client local port, default 10233
   --path-root <segment>       Optional fixed HTTP mask path root; export uses /<segment>, omitted => derive a stable random segment from key
+  --preferred-address <addr>  Optional preferred ingress IP/domain:port for exported node, while keeping --host as Host/SNI
   --host-header <host>        Optional HTTP Host/SNI override
   --aead <name>               AEAD, default aes-128-gcm
   --ascii <mode>              prefer_entropy / prefer_ascii / up_*_down_*, default prefer_entropy
@@ -49,10 +50,11 @@ if (!args.host || !args.key) {
 
 const config = buildClientConfig({
   publicHost: args.host,
+  serverAddress: args["preferred-address"] || "",
   key: args.key,
   localPort: args["local-port"] || "10233",
   pathRoot: args["path-root"] || "",
-  httpMaskHost: args["host-header"] || "",
+  httpMaskHost: args["host-header"] || (args["preferred-address"] ? args.host : ""),
   aead: args.aead || "aes-128-gcm",
   ascii: args.ascii || "prefer_entropy",
   enablePureDownlink: !parseBoolean(args["packed-downlink"], true),

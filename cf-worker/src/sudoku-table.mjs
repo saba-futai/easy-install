@@ -6,14 +6,13 @@ const hintPositions = buildHintPositions();
 let allGridsCache;
 const tableCache = new Map();
 
-function packHintsToKey(hints) {
-  const a = hints.slice();
-  if (a[0] > a[1]) [a[0], a[1]] = [a[1], a[0]];
-  if (a[2] > a[3]) [a[2], a[3]] = [a[3], a[2]];
-  if (a[0] > a[2]) [a[0], a[2]] = [a[2], a[0]];
-  if (a[1] > a[3]) [a[1], a[3]] = [a[3], a[1]];
-  if (a[1] > a[2]) [a[1], a[2]] = [a[2], a[1]];
-  return (((a[0] << 24) | (a[1] << 16) | (a[2] << 8) | a[3]) >>> 0);
+function packHintsToKey(a0, a1, a2, a3) {
+  if (a0 > a1) [a0, a1] = [a1, a0];
+  if (a2 > a3) [a2, a3] = [a3, a2];
+  if (a0 > a2) [a0, a2] = [a2, a0];
+  if (a1 > a3) [a1, a3] = [a3, a1];
+  if (a1 > a2) [a1, a2] = [a2, a1];
+  return (((a0 << 24) | (a1 << 16) | (a2 << 8) | a3) >>> 0);
 }
 
 function buildHintPositions() {
@@ -298,7 +297,7 @@ async function buildSingleDirectionTable(key, mode = "prefer_entropy", customPat
         hints[i] = layout.encodeHint(targetGrid[pos] - 1, pos);
       }
       encodeTable[byteVal].push(hints);
-      decodeMap.set(packHintsToKey(hints), byteVal);
+      decodeMap.set(packHintsToKey(hints[0], hints[1], hints[2], hints[3]), byteVal);
     }
     if (encodeTable[byteVal].length === 0) {
       throw new Error(`empty Sudoku encode table for byte ${byteVal}`);
@@ -351,32 +350,62 @@ export function oppositeDirection(table) {
 }
 
 export function decodeSudokuBytes(table, state, chunk) {
-  const out = [];
+  const out = new Uint8Array((chunk.length >> 2) + 1);
+  let outIndex = 0;
+  let hintCount = state.hintCount | 0;
+  let h0 = state.h0 | 0;
+  let h1 = state.h1 | 0;
+  let h2 = state.h2 | 0;
   for (const b of chunk) {
     if (!table.isHint(b)) continue;
-    state.hintBuf.push(b);
-    if (state.hintBuf.length === 4) {
-      const key = packHintsToKey(state.hintBuf);
+    if (hintCount === 0) {
+      h0 = b;
+      hintCount = 1;
+      continue;
+    }
+    if (hintCount === 1) {
+      h1 = b;
+      hintCount = 2;
+      continue;
+    }
+    if (hintCount === 2) {
+      h2 = b;
+      hintCount = 3;
+      continue;
+    }
+    if (hintCount === 3) {
+      const key = packHintsToKey(h0, h1, h2, b);
       const value = table.decodeMap.get(key);
       if (value === undefined) {
         throw new Error("INVALID_SUDOKU_MAP_MISS");
       }
-      out.push(value);
-      state.hintBuf.length = 0;
+      out[outIndex] = value;
+      outIndex += 1;
+      hintCount = 0;
     }
   }
-  return Uint8Array.from(out);
+  state.hintCount = hintCount;
+  state.h0 = h0;
+  state.h1 = h1;
+  state.h2 = h2;
+  return outIndex === out.length ? out : out.subarray(0, outIndex);
 }
 
 export function encodeSudokuBytes(table, bytes) {
-  const out = [];
-  for (const b of bytes) {
+  const out = new Uint8Array(bytes.length * 4);
+  let offset = 0;
+  for (let i = 0; i < bytes.length; i += 1) {
+    const b = bytes[i];
     const hints = table.encodeTable[b][0];
-    out.push(hints[0], hints[1], hints[2], hints[3]);
+    out[offset] = hints[0];
+    out[offset + 1] = hints[1];
+    out[offset + 2] = hints[2];
+    out[offset + 3] = hints[3];
+    offset += 4;
   }
-  return Uint8Array.from(out);
+  return out;
 }
 
 export function newSudokuDecodeState() {
-  return { hintBuf: [] };
+  return { hintCount: 0, h0: 0, h1: 0, h2: 0 };
 }

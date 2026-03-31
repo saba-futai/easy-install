@@ -45,11 +45,12 @@ export function buildWSPath(pathRoot) {
 }
 
 export function buildClientConfig(options) {
-  const serverAddress = joinHostPort(options.publicHost, 443);
+  const serverAddress = options.serverAddress ? normalizeServerAddress(options.serverAddress, 443) : joinHostPort(options.publicHost, 443);
   const asciiMode = normalizeAsciiMode(options.ascii || "prefer_entropy");
   const pureDownlink = options.enablePureDownlink === true;
   const multiplex = normalizeMultiplexMode(options.httpMaskMultiplex || "on");
   const pathRoot = resolvePathRoot(options.pathRoot, options.pathRootSeed || options.key || options.publicHost);
+  const tlsEnabled = options.httpMaskTLS !== false;
   return {
     mode: "client",
     transport: "tcp",
@@ -64,7 +65,7 @@ export function buildClientConfig(options) {
     httpmask: {
       disable: false,
       mode: "ws",
-      tls: true,
+      tls: tlsEnabled,
       host: String(options.httpMaskHost || "").trim(),
       path_root: pathRoot,
       multiplex,
@@ -82,7 +83,7 @@ export function buildShortLinkFromClientConfig(config) {
     a: encodeAscii(config.ascii),
     e: config.aead,
     m: config.local_port,
-    ht: true,
+    ht: config.httpmask?.tls !== false,
     hm: "ws",
     x: config.enable_pure_downlink === false,
   };
@@ -107,7 +108,7 @@ export function buildClashNode(config, nodeName = "sudoku-cf-worker-pure") {
     `  table-type: ${encodeAscii(config.ascii)}`,
     "  http-mask: true",
     "  http-mask-mode: ws",
-    "  http-mask-tls: true",
+    `  http-mask-tls: ${config.httpmask?.tls !== false}`,
     `  http-mask-multiplex: "${normalizeMultiplexMode(config.httpmask?.multiplex || "off")}"`,
     `  enable-pure-downlink: ${config.enable_pure_downlink !== false}`,
   ];
@@ -138,6 +139,17 @@ function encodeAscii(mode) {
       return "entropy";
     default:
       return normalized;
+  }
+}
+
+function normalizeServerAddress(value, defaultPort = 443) {
+  const raw = String(value || "").trim();
+  if (!raw) throw new Error("empty serverAddress");
+  try {
+    const { host, port } = splitHostPort(raw);
+    return joinHostPort(host, port);
+  } catch {
+    return joinHostPort(raw, defaultPort);
   }
 }
 

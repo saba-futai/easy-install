@@ -1,6 +1,6 @@
 # Sudoku Pure Cloudflare Worker 部署
 
-纯 Cloudflare Worker 的 Sudoku 服务端实现。
+纯 Cloudflare Worker 的 Sudoku 服务端实现，支持在导出节点时动态套用优选 IP，并兼容 `cfnew` 风格的 `yx / yxURL / wk / epi / epd / yxby` 配置语义。
 
 ## 当前支持
 
@@ -13,6 +13,8 @@
 - `OpenTCP`
 - `StartMux` / HTTPMask session mux
 - `ascii` 对称模式和方向模式：`prefer_entropy`、`prefer_ascii`、`up_*_down_*`
+- 导出时动态优选 IP：支持内置列表和远程列表 URL
+- 可选 KV 持久化优选池，并提供 API 管理入口
 
 
 
@@ -69,6 +71,11 @@ node cf-worker/tools/build-one-line-worker.mjs
 | `SUDOKU_MANAGE_TOKEN` | `my-secret` | 管理页路径令牌 |
 | `SUDOKU_PUBLIC_HOST` | `sudoku.example.com` | 对外给客户端展示的域名 |
 | `SUDOKU_HTTP_MASK_PATH_ROOT` | `/aabbcc` | 可选固定 WS 路径前缀；未设置时会按 `SUDOKU_KEY` 稳定派生随机 `6-10` 位小写字母并以 `/` 开头导出 |
+| `SUDOKU_PREFERRED_IPS` | `1.1.1.1:443#HK,2.2.2.2:443#JP` | 可选，内置优选入口池；导出节点时会从这里选入口地址 |
+| `SUDOKU_PREFERRED_IP_URL` | `https://example.com/cf-ips.txt` | 可选，远程优选 IP 列表；每次打开管理页或 `/shortlink` `/client.json` 时都会重新拉取 |
+| `SUDOKU_PREFERRED_IP_STRATEGY` | `best` | `best / first / rotate / random`，默认 `best`；优先按 `score`，其次按更低延迟、更高速度 |
+| `SUDOKU_PREFERRED_IP_CACHE_MS` | `60000` | 远程优选列表缓存毫秒数，默认 60 秒 |
+| `SUDOKU_PREFERRED_IP_KV_KEY` | `sudoku:preferred_ips` | 可选，KV 中保存优选池的 key |
 | `SUDOKU_CLIENT_PORT` | `10233` | 导出的客户端本地 mixed 端口 |
 | `SUDOKU_HTTP_MASK_HOST` | `cdn.example.com` | 可选，覆盖客户端 Host/SNI |
 | `SUDOKU_NODE_NAME` | `sudoku-cf-worker-pure` | Clash 节点名 |
@@ -77,6 +84,32 @@ node cf-worker/tools/build-one-line-worker.mjs
 | `SUDOKU_CUSTOM_TABLE` | `xpxvvpvv` | 可选，自定义表 |
 | `SUDOKU_ENABLE_PURE_DOWNLINK` | `false` | 默认 packed downlink；设为 `true` 时导出 pure downlink 客户端配置 |
 | `SUDOKU_HTTP_MASK_MULTIPLEX` | `on` | 默认开启 mux；也支持 `off / auto / on` |
+
+兼容的 `cfnew` 风格别名：
+
+- `SUDOKU_YX` 等价于 `SUDOKU_PREFERRED_IPS`
+- `SUDOKU_YX_URL` 等价于 `SUDOKU_PREFERRED_IP_URL`
+- `SUDOKU_WK` 等价于 `SUDOKU_PREFERRED_REGION`
+- `SUDOKU_EPI` 等价于 `SUDOKU_ENABLE_PREFERRED_IP`
+- `SUDOKU_EPD` 等价于 `SUDOKU_ENABLE_PREFERRED_DOMAIN`
+- `SUDOKU_YXBY` 等价于 `SUDOKU_DISABLE_PREFERRED`
+
+## KV 与 API
+
+如果你想像 `cfnew` 一样动态维护优选池，可以给 Worker 绑定一个 KV namespace，变量名用 `C`。
+
+然后访问：
+
+- `GET /<manageToken>/api/preferred-ips`
+- `POST /<manageToken>/api/preferred-ips`
+- `DELETE /<manageToken>/api/preferred-ips`
+
+`POST` 支持：
+
+- `text/plain`：每行一个 `ip:port#标签`
+- `application/json`：`{"entries":["1.1.1.1:443#HKG","2.2.2.2:443#LAX"]}`
+
+远程优选源也支持 CSV。只要包含 `ip/address` 列，若同时有 `score`、`latency/delay/ping`、`download/speed` 列，`/shortlink` 会自动选当前最优的一条。
 
 ## 部署后路径
 
@@ -94,6 +127,22 @@ node cf-worker/tools/build-one-line-worker.mjs
 - 客户端 JSON：`https://sudoku.example.com/my-secret/client.json`
 - Clash 配置：`https://sudoku.example.com/my-secret/clash.yaml`
 
+如果同时设置了：
+
+- `SUDOKU_PREFERRED_IP_URL=https://example.com/cf-ips.txt`
+
+而远程列表第一条是：
+
+- `198.41.192.27:443#HKG`
+
+则网页导出的节点会变成：
+
+- `server_address = 198.41.192.27:443`
+- `httpmask.host = sudoku.example.com`
+- `tls = true`
+
+也就是说，客户端实际连优选 IP，但 `Host/SNI` 仍然走你的域名。
+
 ## 本地生成短链接
 
 纯 downlink：
@@ -101,6 +150,7 @@ node cf-worker/tools/build-one-line-worker.mjs
 ```bash
 node cf-worker/tools/build-shortlink.mjs \
   --host sudoku.example.com \
+  --preferred-address 198.41.192.27:443 \
   --key 'my-shared-key' \
   --aead aes-128-gcm \
   --packed-downlink false \
@@ -112,6 +162,7 @@ packed downlink + mux：
 ```bash
 node cf-worker/tools/build-shortlink.mjs \
   --host sudoku.example.com \
+  --preferred-address 198.41.192.27:443 \
   --key 'my-shared-key' \
   --aead aes-128-gcm \
   --packed-downlink true \
