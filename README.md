@@ -19,7 +19,7 @@ Cloudflare Worker 入口部署请看：[README.worker.zh-CN.md](./README.worker.
 
 ## 💻 客户端配置
 
-服务端部署完成后，脚本会输出 **短链接** 和 **Clash 配置**。桌面端（Windows/macOS/Linux）请统一使用官方 GUI 客户端：[`sudoku-desktop`](https://github.com/SUDOKU-ASCII/sudoku-desktop)。
+服务端部署完成后，脚本会输出 **短链接** 和 **Mihomo HTTPS 订阅链接**。桌面端（Windows/macOS/Linux）请统一使用官方 GUI 客户端：[`sudoku-desktop`](https://github.com/SUDOKU-ASCII/sudoku-desktop)。
 
 ### 桌面 GUI 客户端（Windows / macOS / Linux）
 
@@ -105,7 +105,7 @@ Cloudflare Worker 入口部署请看：[README.worker.zh-CN.md](./README.worker.
 - ✅ 创建 systemd 服务（开机自启）
 - ✅ 自动部署 Cloudflare 风格 500 错误页回落站（默认 `127.0.0.1:10232`，失败则回落 `127.0.0.1:80`）
 - ✅ 自动配置 UFW 防火墙（如果启用）
-- ✅ 输出短链接和 Clash 节点配置
+- ✅ 输出短链接和 Mihomo HTTPS 订阅链接
 
 ### 默认配置
 
@@ -136,8 +136,23 @@ sudo SUDOKU_CF_FALLBACK=false bash -c "$(curl -fsSL https://raw.githubuserconten
 # 自定义 Cloudflare 500 错误页回落站端口（优先 10232，失败再尝试 80）
 sudo SUDOKU_CF_FALLBACK_PORT=10232 SUDOKU_CF_FALLBACK_FALLBACK_PORT=80 bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
 
-# 指定短链接/Clash 输出使用的域名或 IP（例如走 CDN 时用域名）
+# 指定短链接/导出节点使用的域名或 IP（例如走 CDN 时用域名）
 sudo SERVER_IP="example.com" bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
+
+# 指定 Mihomo HTTPS 订阅使用的域名（默认：SERVER_IP 为域名时直接使用，否则自动派生为 <ipv4>.sslip.io）
+sudo SUDOKU_SUBSCRIPTION_DOMAIN="sub.example.com" bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
+
+# Mihomo HTTPS 订阅默认监听 8443，也可以显式覆盖
+sudo SUDOKU_SUBSCRIPTION_PORT=8443 bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
+
+# 指定订阅文件路径（默认随机）
+sudo SUDOKU_SUBSCRIPTION_PATH="subscription.yaml" bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
+
+# 指定节点名
+sudo SUDOKU_SUBSCRIPTION_NODE_NAME="sudoku-hk" bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
+
+# 如需覆盖内置模板，可显式传入自定义模板 URL
+sudo SUDOKU_SUBSCRIPTION_TEMPLATE_URL="https://example.com/my-template.yaml" bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
 
 # 关闭 HTTP 掩码（直连 TCP）
 sudo SUDOKU_HTTP_MASK=false bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
@@ -177,28 +192,19 @@ sudoku://eyJoIjoiMS4yLjMuNCIsInAiOjEwMjMzLC...
 客户端使用方式：
 在桌面 GUI 客户端里导入该 `sudoku://...` 短链接即可（见上方「桌面 GUI 客户端」步骤）。
 
-### 2. Clash/Mihomo 节点配置
+### 2. Mihomo HTTPS 订阅链接
 
-```yaml
-# sudoku
-- name: sudoku
-  type: sudoku
-  server: 1.2.3.4
-  port: 10233
-  key: "你的私钥"
-  aead-method: chacha20-poly1305
-  padding-min: 2
-  padding-max: 7
-  custom-table: xpxvvpvv
-  table-type: up_ascii_down_entropy
-	  http-mask: true
-	  http-mask-mode: ws
-	  http-mask-tls: false
-	  http-mask-multiplex: "on"
-	  enable-pure-downlink: false
+```text
+https://1-2-3-4.sslip.io:8443/subscription-xxxxxxxxxxxx.yaml
 ```
 
-将此配置添加到你的 Clash 配置文件的 `proxies` 部分。
+订阅行为说明：
+- 脚本会在本机用 ACME 申请证书，并通过 `8443` 输出 HTTPS 订阅。
+- 默认只生成一个 `Proxy` 分组，不再保留模板里的 `Auto` 组。
+- 若未显式设置 `SUDOKU_SUBSCRIPTION_TEMPLATE_URL`，脚本会使用内置模板，不会把你的私有模板链接写进代码。
+
+导入方式：
+- 在 Mihomo / Clash Meta GUI 中选择「订阅 / Profile / Remote URL」之类入口，粘贴上面的 HTTPS 地址即可。
 
 ---
 
@@ -259,7 +265,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-i
 
 ## 💻 Client Configuration
 
-After server deployment, the script outputs a **short link** and **Clash config**. For desktop use (Windows/macOS/Linux), use the official GUI client: [`sudoku-desktop`](https://github.com/SUDOKU-ASCII/sudoku-desktop).
+After server deployment, the script outputs a **short link** and a **Mihomo HTTPS subscription URL**. For desktop use (Windows/macOS/Linux), use the official GUI client: [`sudoku-desktop`](https://github.com/SUDOKU-ASCII/sudoku-desktop).
 
 ### Desktop GUI Client (Windows / macOS / Linux)
 
@@ -344,7 +350,7 @@ Open Sudodroid and import nodes using one of these methods:
 - ✅ Create systemd service (auto-start)
 - ✅ Deploy Cloudflare-style 500 error fallback page (default `127.0.0.1:10232`, falls back to `127.0.0.1:80`)
 - ✅ Configure UFW firewall (if enabled)
-- ✅ Output short link and Clash node config
+- ✅ Output short link and Mihomo HTTPS subscription URL
 
 ### Default Configuration
 
@@ -372,8 +378,23 @@ sudo SUDOKU_CF_FALLBACK=false bash -c "$(curl -fsSL https://raw.githubuserconten
 # Customize Cloudflare 500 fallback page ports (try 10232 first, then 80)
 sudo SUDOKU_CF_FALLBACK_PORT=10232 SUDOKU_CF_FALLBACK_FALLBACK_PORT=80 bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
 
-# Override advertised host (domain/IP) used in short link & Clash config (use a domain for CDN)
+# Override advertised host (domain/IP) used in short link and exported Sudoku node (use a domain for CDN)
 sudo SERVER_IP="example.com" bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
+
+# Override HTTPS subscription domain (default: use SERVER_IP when it is a domain, otherwise derive <ipv4>.sslip.io)
+sudo SUDOKU_SUBSCRIPTION_DOMAIN="sub.example.com" bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
+
+# HTTPS subscription listens on 8443 by default
+sudo SUDOKU_SUBSCRIPTION_PORT=8443 bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
+
+# Override subscription path
+sudo SUDOKU_SUBSCRIPTION_PATH="subscription.yaml" bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
+
+# Override exported node name inside the generated Mihomo profile
+sudo SUDOKU_SUBSCRIPTION_NODE_NAME="sudoku-hk" bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
+
+# Override the built-in template with your own remote YAML
+sudo SUDOKU_SUBSCRIPTION_TEMPLATE_URL="https://example.com/my-template.yaml" bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
 
 # Disable HTTP mask (raw TCP)
 sudo SUDOKU_HTTP_MASK=false bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)"
@@ -413,29 +434,18 @@ sudoku://eyJoIjoiMS4yLjMuNCIsInAiOjEwMjMzLC...
 Client usage:
 Import this `sudoku://...` short link in the desktop GUI client (see "Desktop GUI Client" above).
 
-### 2. Clash/Mihomo Node Config
+### 2. Mihomo HTTPS Subscription URL
 
-```yaml
-# sudoku
-- name: sudoku
-  type: sudoku
-  server: 1.2.3.4
-  port: 10233
-  key: "your-private-key"
-  aead-method: chacha20-poly1305
-  padding-min: 2
-  padding-max: 7
-  custom-table: xpxvvpvv
-  table-type: up_ascii_down_entropy
-	  http-mask: true
-	  http-mask-mode: ws
-	  http-mask-tls: false
-	  http-mask-path-root: "aabbcc"
-	  http-mask-multiplex: "on"
-	  enable-pure-downlink: false
+```text
+https://1-2-3-4.sslip.io:8443/subscription-xxxxxxxxxxxx.yaml
 ```
 
-Add to the `proxies` section of your Clash config.
+Behavior:
+- The script issues a local ACME certificate and serves the Mihomo profile over HTTPS on `8443`.
+- The generated profile keeps a single `Proxy` group only; the template `Auto` group is removed.
+- If `SUDOKU_SUBSCRIPTION_TEMPLATE_URL` is unset, the script uses a built-in template so private template URLs are never baked into the code.
+
+Import this URL in your Mihomo / Clash Meta GUI as a remote profile / subscription.
 
 ---
 
