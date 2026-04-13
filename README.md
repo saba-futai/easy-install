@@ -199,7 +199,8 @@ https://1-2-3-4.sslip.io:8443/subscription-xxxxxxxxxxxx.yaml
 ```
 
 订阅行为说明：
-- 脚本会在本机用 ACME 申请证书，并通过 `8443` 输出 HTTPS 订阅。
+- 脚本会在本机用 ACME 申请证书，并通过 `8443` 输出 HTTPS 订阅；若 `8443` 被占用，会自动切换到 `2053`。
+- `80` 端口只在 ACME 申请/续期期间临时占用；若被 `nginx` 等常见 Web 服务占用，脚本会先临时停掉，完成后再恢复。
 - 默认只生成一个 `Proxy` 分组，不再保留模板里的 `Auto` 组。
 - 若未显式设置 `SUDOKU_SUBSCRIPTION_TEMPLATE_URL`，脚本会使用内置模板，不会把你的私有模板链接写进代码。
 
@@ -441,7 +442,8 @@ https://1-2-3-4.sslip.io:8443/subscription-xxxxxxxxxxxx.yaml
 ```
 
 Behavior:
-- The script issues a local ACME certificate and serves the Mihomo profile over HTTPS on `8443`.
+- The script issues a local ACME certificate and serves the Mihomo profile over HTTPS on `8443`; if `8443` is busy, it automatically falls back to `2053`.
+- Port `80` is used only temporarily for ACME issue/renew; if it is occupied by common web services such as `nginx`, the script stops them briefly and restores them afterward.
 - The generated profile keeps a single `Proxy` group only; the template `Auto` group is removed.
 - If `SUDOKU_SUBSCRIPTION_TEMPLATE_URL` is unset, the script uses a built-in template so private template URLs are never baked into the code.
 

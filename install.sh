@@ -78,6 +78,7 @@ SUBSCRIPTION_RUNTIME_DIR="${SUBSCRIPTION_LIB_DIR}/run"
 SUBSCRIPTION_CERT_DIR="${CONFIG_DIR}/subscription-cert"
 SUBSCRIPTION_SERVER_SCRIPT="${SUBSCRIPTION_LIB_DIR}/server.py"
 SUBSCRIPTION_SERVER_CONFIG="${SUBSCRIPTION_LIB_DIR}/server.json"
+SUBSCRIPTION_RENEW_SCRIPT="${SUBSCRIPTION_LIB_DIR}/renew-cert.sh"
 ACME_HOME="/root/.acme.sh"
 ACME_BIN="${ACME_HOME}/acme.sh"
 DEFAULT_ASCII_MODE="up_ascii_down_entropy"
@@ -106,6 +107,7 @@ SUBSCRIPTION_KEY_FILE="${SUBSCRIPTION_CERT_DIR}/privkey.key"
 SUBSCRIPTION_BIND="0.0.0.0"
 SUBSCRIPTION_TEMPLATE_URL=""
 ACME_EMAIL=""
+ACME_STOPPED_SERVICES=""
 PKG_MANAGER=""
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -359,6 +361,7 @@ normalize_settings() {
     SUBSCRIPTION_TEMPLATE_URL=$(trim_space "${SUDOKU_SUBSCRIPTION_TEMPLATE_URL}")
     SUBSCRIPTION_DOMAIN=$(trim_space "${SUDOKU_SUBSCRIPTION_DOMAIN}")
     ACME_EMAIL=$(trim_space "${SUDOKU_ACME_EMAIL}")
+    select_subscription_https_port
 
     if [[ "${CF_FALLBACK_PORT}" == "${SUBSCRIPTION_HTTP_PORT}" ]]; then
         CF_FALLBACK_PORT=$(pick_random_high_port)
@@ -463,6 +466,39 @@ yaml_escape_double_quoted() {
     value="${value//\"/\\\"}"
     value="${value//$'\n'/\\n}"
     printf '%s' "${value}"
+}
+
+systemd_unit_exists() {
+    local unit="${1:-}"
+    [[ -n "${unit}" ]] || return 1
+    systemctl list-unit-files "${unit}.service" --no-legend 2>/dev/null | grep -q "^${unit}\.service"
+}
+
+is_subscription_service_using_port() {
+    local port="${1:-}"
+    [[ -f "${SUBSCRIPTION_SERVER_CONFIG}" ]] || return 1
+    jq -e --arg port "${port}" '.https_port == ($port | tonumber)' "${SUBSCRIPTION_SERVER_CONFIG}" >/dev/null 2>&1
+}
+
+select_subscription_https_port() {
+    if ! is_tcp_port_in_use "${SUBSCRIPTION_HTTPS_PORT}"; then
+        return 0
+    fi
+
+    if is_subscription_service_using_port "${SUBSCRIPTION_HTTPS_PORT}" && systemctl is-active --quiet "${SUBSCRIPTION_SERVICE_NAME}" 2>/dev/null; then
+        return 0
+    fi
+
+    if [[ "${SUBSCRIPTION_HTTPS_PORT}" == "8443" ]]; then
+        if is_tcp_port_in_use "2053"; then
+            error "Port 8443 is occupied and fallback port 2053 is also in use. Please free one of them or set SUDOKU_SUBSCRIPTION_PORT manually."
+        fi
+        SUBSCRIPTION_HTTPS_PORT="2053"
+        warn "Port 8443 is occupied; switching HTTPS subscription port to 2053."
+        return 0
+    fi
+
+    error "Port ${SUBSCRIPTION_HTTPS_PORT} is already in use. Please free it or set SUDOKU_SUBSCRIPTION_PORT=2053."
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2046,12 +2082,14 @@ def serve(config: dict, http_only: bool) -> None:
     bind = str(config.get("bind", "0.0.0.0"))
     http_port = int(config.get("http_port", 80))
     https_port = int(config.get("https_port", 8443))
+    servers = []
+    threads = []
 
-    http_server = ThreadingHTTPServer((bind, http_port), make_http_handler(config, http_only))
-    servers = [http_server]
-    threads = [threading.Thread(target=http_server.serve_forever, daemon=True)]
-
-    if not http_only:
+    if http_only:
+        http_server = ThreadingHTTPServer((bind, http_port), make_http_handler(config, True))
+        servers.append(http_server)
+        threads.append(threading.Thread(target=http_server.serve_forever, daemon=True))
+    else:
         https_server = ThreadingHTTPServer((bind, https_port), make_https_handler(config))
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(config["cert_file"], config["key_file"])
@@ -2110,6 +2148,154 @@ write_subscription_server_config() {
 EOF
 }
 
+write_subscription_renew_script() {
+    mkdir -p "${SUBSCRIPTION_LIB_DIR}" "${SUBSCRIPTION_RUNTIME_DIR}"
+    cat > "${SUBSCRIPTION_RENEW_SCRIPT}" << EOF
+#!/bin/bash
+set -e
+
+ACME_BIN="${ACME_BIN}"
+ACME_HOME="${ACME_HOME}"
+DOMAIN="${SUBSCRIPTION_DOMAIN}"
+WEBROOT="${SUBSCRIPTION_WWW_DIR}"
+SERVER_SCRIPT="${SUBSCRIPTION_SERVER_SCRIPT}"
+SERVER_CONFIG="${SUBSCRIPTION_SERVER_CONFIG}"
+HTTP_PORT="${SUBSCRIPTION_HTTP_PORT}"
+LOG_FILE="${SUBSCRIPTION_RUNTIME_DIR}/renew-http.log"
+
+STOPPED_SERVICES=""
+TEMP_PID=""
+
+is_tcp_port_in_use() {
+    local port="\${1:-}"
+    if command -v ss >/dev/null 2>&1; then
+        ss -Hltn 2>/dev/null | awk '{print \$4}' | grep -Eq "(^|:|\\\\])\${port}\$"
+        return \$?
+    fi
+    if command -v netstat >/dev/null 2>&1; then
+        netstat -ltn 2>/dev/null | awk 'NR > 2 {print \$4}' | grep -Eq "(^|:|\\\\])\${port}\$"
+        return \$?
+    fi
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -nP -iTCP:"\${port}" -sTCP:LISTEN >/dev/null 2>&1
+        return \$?
+    fi
+    return 1
+}
+
+systemd_unit_exists() {
+    local unit="\${1:-}"
+    systemctl list-unit-files "\${unit}.service" --no-legend 2>/dev/null | grep -q "^\${unit}\\.service"
+}
+
+restore_services() {
+    local svc
+    while IFS= read -r svc; do
+        if [[ -z "\${svc}" ]]; then
+            continue
+        fi
+        systemctl start "\${svc}" >/dev/null 2>&1 || true
+    done <<< "\${STOPPED_SERVICES}"
+    STOPPED_SERVICES=""
+}
+
+cleanup() {
+    if [[ -n "\${TEMP_PID}" ]]; then
+        kill "\${TEMP_PID}" >/dev/null 2>&1 || true
+        wait "\${TEMP_PID}" >/dev/null 2>&1 || true
+        TEMP_PID=""
+    fi
+    restore_services
+}
+
+trap cleanup EXIT
+
+if is_tcp_port_in_use "\${HTTP_PORT}"; then
+    for svc in nginx openresty apache2 httpd caddy; do
+        if ! systemd_unit_exists "\${svc}"; then
+            continue
+        fi
+        if ! systemctl is-active --quiet "\${svc}" >/dev/null 2>&1; then
+            continue
+        fi
+        if ! is_tcp_port_in_use "\${HTTP_PORT}"; then
+            break
+        fi
+        systemctl stop "\${svc}" >/dev/null 2>&1 || true
+        sleep 1
+        if ! systemctl is-active --quiet "\${svc}" >/dev/null 2>&1; then
+            STOPPED_SERVICES="\${svc}"$'\\n'"\${STOPPED_SERVICES}"
+        fi
+    done
+fi
+
+if is_tcp_port_in_use "\${HTTP_PORT}"; then
+    echo "Port \${HTTP_PORT} is still occupied; ACME renew cannot continue." >&2
+    exit 1
+fi
+
+nohup python3 "\${SERVER_SCRIPT}" --config "\${SERVER_CONFIG}" --http-only > "\${LOG_FILE}" 2>&1 &
+TEMP_PID=\$!
+sleep 1
+kill -0 "\${TEMP_PID}" >/dev/null 2>&1
+
+"\${ACME_BIN}" --home "\${ACME_HOME}" --renew -d "\${DOMAIN}" --ecc --webroot "\${WEBROOT}"
+EOF
+    chmod 755 "${SUBSCRIPTION_RENEW_SCRIPT}"
+}
+
+stop_acme_port_blockers() {
+    ACME_STOPPED_SERVICES=""
+
+    if ! is_tcp_port_in_use "${SUBSCRIPTION_HTTP_PORT}"; then
+        return 0
+    fi
+
+    if ! command -v systemctl >/dev/null 2>&1; then
+        return 1
+    fi
+
+    local candidates=(nginx openresty apache2 httpd caddy)
+    local svc
+    for svc in "${candidates[@]}"; do
+        if ! systemd_unit_exists "${svc}"; then
+            continue
+        fi
+        if ! systemctl is-active --quiet "${svc}" >/dev/null 2>&1; then
+            continue
+        fi
+        if ! is_tcp_port_in_use "${SUBSCRIPTION_HTTP_PORT}"; then
+            break
+        fi
+
+        warn "Port ${SUBSCRIPTION_HTTP_PORT} is occupied; stopping ${svc} temporarily for ACME validation."
+        systemctl stop "${svc}" >/dev/null 2>&1 || true
+        sleep 1
+        if ! systemctl is-active --quiet "${svc}" >/dev/null 2>&1; then
+            ACME_STOPPED_SERVICES="${svc}"$'\n'"${ACME_STOPPED_SERVICES}"
+        fi
+    done
+
+    ! is_tcp_port_in_use "${SUBSCRIPTION_HTTP_PORT}"
+}
+
+restore_acme_port_blockers() {
+    local svc
+    if [[ -z "${ACME_STOPPED_SERVICES}" ]]; then
+        return 0
+    fi
+
+    while IFS= read -r svc; do
+        if [[ -z "${svc}" ]]; then
+            continue
+        fi
+        info "Restoring temporarily stopped service: ${svc}"
+        systemctl start "${svc}" >/dev/null 2>&1 || warn "Failed to restore ${svc}; please start it manually."
+    done <<< "${ACME_STOPPED_SERVICES}"
+
+    ACME_STOPPED_SERVICES=""
+}
+
 ensure_acme_client() {
     mkdir -p "${ACME_HOME}"
     if [[ -x "${ACME_BIN}" ]]; then
@@ -2123,10 +2309,14 @@ ensure_acme_client() {
 }
 
 start_temp_subscription_http_server() {
-    if systemctl is-active --quiet "${SUBSCRIPTION_SERVICE_NAME}" 2>/dev/null; then
-        return 0
+    if is_tcp_port_in_use "${SUBSCRIPTION_HTTP_PORT}"; then
+        if ! stop_acme_port_blockers; then
+            restore_acme_port_blockers
+            error "Port ${SUBSCRIPTION_HTTP_PORT} is still occupied after attempting temporary release. Please free the port and retry."
+        fi
     fi
     if is_tcp_port_in_use "${SUBSCRIPTION_HTTP_PORT}"; then
+        restore_acme_port_blockers
         error "Port ${SUBSCRIPTION_HTTP_PORT} is already in use. ACME HTTP-01 validation requires this port to be reachable."
     fi
 
@@ -2135,6 +2325,7 @@ start_temp_subscription_http_server() {
     SUBSCRIPTION_TEMP_PID=$!
     sleep 1
     if ! kill -0 "${SUBSCRIPTION_TEMP_PID}" >/dev/null 2>&1; then
+        restore_acme_port_blockers
         error "Failed to start temporary HTTP server for ACME challenge"
     fi
 }
@@ -2145,6 +2336,7 @@ stop_temp_subscription_http_server() {
         wait "${SUBSCRIPTION_TEMP_PID}" >/dev/null 2>&1 || true
         SUBSCRIPTION_TEMP_PID=""
     fi
+    restore_acme_port_blockers
 }
 
 issue_subscription_certificate() {
@@ -2153,10 +2345,8 @@ issue_subscription_certificate() {
     write_subscription_server_config
 
     local started_temp="false"
-    if ! systemctl is-active --quiet "${SUBSCRIPTION_SERVICE_NAME}" 2>/dev/null; then
-        start_temp_subscription_http_server
-        started_temp="true"
-    fi
+    start_temp_subscription_http_server
+    started_temp="true"
 
     info "Issuing ACME certificate for ${SUBSCRIPTION_DOMAIN}..."
     "${ACME_BIN}" --home "${ACME_HOME}" --register-account -m "${ACME_EMAIL}" --server letsencrypt >/dev/null 2>&1 || true
@@ -2219,6 +2409,8 @@ EOF
 }
 
 create_acme_renew_timer() {
+    write_subscription_renew_script
+
     cat > "/etc/systemd/system/sudoku-acme-renew.service" << EOF
 [Unit]
 Description=Renew ACME certificates for Sudoku subscription
@@ -2227,7 +2419,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=${ACME_BIN} --cron --home ${ACME_HOME}
+ExecStart=${SUBSCRIPTION_RENEW_SCRIPT}
 EOF
 
     cat > "/etc/systemd/system/${SUBSCRIPTION_ACME_TIMER_NAME}" << EOF
@@ -2346,6 +2538,7 @@ uninstall() {
     # Remove firewall rule
     if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
         ufw delete allow "${uninstall_port}/tcp" > /dev/null 2>&1 || true
+        ufw delete allow "${SUBSCRIPTION_HTTP_PORT}/tcp" > /dev/null 2>&1 || true
         ufw delete allow "${SUBSCRIPTION_HTTPS_PORT}/tcp" > /dev/null 2>&1 || true
     fi
     
