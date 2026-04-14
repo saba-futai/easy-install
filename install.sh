@@ -1414,7 +1414,6 @@ update_kernel_only() {
     fi
 
     restart_service_if_present
-    refresh_cf_fallback_if_present
     success "Kernel update complete (${VERSION})"
 }
 
@@ -1534,7 +1533,18 @@ prepare_existing_install_output() {
     fi
 
     generate_short_link
-    setup_subscription_https
+
+    if [[ -z "${SUBSCRIPTION_URL:-}" ]]; then
+        if [[ -n "${SUBSCRIPTION_PATH:-}" ]]; then
+            derive_subscription_domain
+        else
+            warn "Subscription path missing in ${EXPORT_STATE_FILE}; cannot rebuild HTTPS subscription URL."
+            return 1
+        fi
+    elif [[ -n "${SUBSCRIPTION_PATH:-}" ]]; then
+        SUBSCRIPTION_OUTPUT_FILE="${SUBSCRIPTION_WWW_DIR}/${SUBSCRIPTION_PATH}"
+    fi
+
     persist_export_state
     return 0
 }
