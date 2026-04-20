@@ -109,6 +109,10 @@ SUBSCRIPTION_TEMPLATE_URL=""
 ACME_EMAIL=""
 ACME_STOPPED_SERVICES=""
 PKG_MANAGER=""
+SUDOKU_CORE_READY="false"
+SUBSCRIPTION_SETUP_ENABLED="true"
+SUBSCRIPTION_DISABLED_REASON=""
+NONFATAL_ISSUES=()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Color Output
@@ -141,6 +145,25 @@ info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 success() { echo -e "${GREEN}[✓]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[✗]${NC} $1"; exit 1; }
+return_error() { echo -e "${RED}[✗]${NC} $1" >&2; return 1; }
+
+record_nonfatal_issue() {
+    local message="${1:-}"
+    [[ -n "${message}" ]] || return 0
+    NONFATAL_ISSUES+=("${message}")
+    warn "${message}"
+}
+
+disable_subscription_setup() {
+    local reason="${1:-HTTPS subscription setup is unavailable.}"
+    SUBSCRIPTION_SETUP_ENABLED="false"
+    SUBSCRIPTION_URL=""
+    SUBSCRIPTION_OUTPUT_FILE=""
+    if [[ -z "${SUBSCRIPTION_DISABLED_REASON}" ]]; then
+        SUBSCRIPTION_DISABLED_REASON="${reason}"
+        record_nonfatal_issue "${reason}"
+    fi
+}
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Input Normalization
@@ -340,7 +363,7 @@ normalize_settings() {
 
     SUBSCRIPTION_HTTPS_PORT=$(trim_space "${SUDOKU_SUBSCRIPTION_PORT}")
     if ! is_valid_port "${SUBSCRIPTION_HTTPS_PORT}"; then
-        error "Invalid SUDOKU_SUBSCRIPTION_PORT=${SUDOKU_SUBSCRIPTION_PORT} (expected 1-65535)"
+        disable_subscription_setup "Invalid SUDOKU_SUBSCRIPTION_PORT=${SUDOKU_SUBSCRIPTION_PORT}; HTTPS subscription will be skipped."
     fi
 
     SUBSCRIPTION_PATH=$(trim_space "${SUDOKU_SUBSCRIPTION_PATH}")
@@ -351,7 +374,7 @@ normalize_settings() {
         SUBSCRIPTION_PATH="${SUBSCRIPTION_PATH#/}"
     done
     if [[ -z "${SUBSCRIPTION_PATH}" || ! "${SUBSCRIPTION_PATH}" =~ ^[A-Za-z0-9._-]+$ ]]; then
-        error "Invalid SUDOKU_SUBSCRIPTION_PATH=${SUDOKU_SUBSCRIPTION_PATH} (expected [A-Za-z0-9._-], e.g. subscription.yaml)"
+        disable_subscription_setup "Invalid SUDOKU_SUBSCRIPTION_PATH=${SUDOKU_SUBSCRIPTION_PATH}; HTTPS subscription will be skipped."
     fi
 
     SUBSCRIPTION_NODE_NAME=$(trim_space "${SUDOKU_SUBSCRIPTION_NODE_NAME}")
@@ -361,7 +384,9 @@ normalize_settings() {
     SUBSCRIPTION_TEMPLATE_URL=$(trim_space "${SUDOKU_SUBSCRIPTION_TEMPLATE_URL}")
     SUBSCRIPTION_DOMAIN=$(trim_space "${SUDOKU_SUBSCRIPTION_DOMAIN}")
     ACME_EMAIL=$(trim_space "${SUDOKU_ACME_EMAIL}")
-    select_subscription_https_port
+    if [[ "${SUBSCRIPTION_SETUP_ENABLED}" == "true" ]] && ! select_subscription_https_port; then
+        disable_subscription_setup "HTTPS subscription port selection failed; sudoku:// short link will still be shown."
+    fi
 
     if [[ "${CF_FALLBACK_PORT}" == "${SUBSCRIPTION_HTTP_PORT}" ]]; then
         CF_FALLBACK_PORT=$(pick_random_high_port)
@@ -491,14 +516,14 @@ select_subscription_https_port() {
 
     if [[ "${SUBSCRIPTION_HTTPS_PORT}" == "8443" ]]; then
         if is_tcp_port_in_use "2053"; then
-            error "Port 8443 is occupied and fallback port 2053 is also in use. Please free one of them or set SUDOKU_SUBSCRIPTION_PORT manually."
+            return_error "Port 8443 is occupied and fallback port 2053 is also in use. Please free one of them or set SUDOKU_SUBSCRIPTION_PORT manually."
         fi
         SUBSCRIPTION_HTTPS_PORT="2053"
         warn "Port 8443 is occupied; switching HTTPS subscription port to 2053."
         return 0
     fi
 
-    error "Port ${SUBSCRIPTION_HTTPS_PORT} is already in use. Please free it or set SUDOKU_SUBSCRIPTION_PORT=2053."
+    return_error "Port ${SUBSCRIPTION_HTTPS_PORT} is already in use. Please free it or set SUDOKU_SUBSCRIPTION_PORT=2053."
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1091,7 +1116,9 @@ setup_cf_fallback() {
     fi
 
     info "Setting up Cloudflare-style 500 error page fallback (embedded, no pip required)..."
-    write_cf_fallback_server
+    if ! write_cf_fallback_server; then
+        return_error "Failed to write CF fallback service files"
+    fi
 
     local selected_port=""
     if start_cf_fallback_service "${CF_FALLBACK_BIND}" "${CF_FALLBACK_PORT}"; then
@@ -1104,7 +1131,7 @@ setup_cf_fallback() {
     fi
 
     if [[ -z "${selected_port}" ]]; then
-        warn "CF fallback service setup failed; using fallback_address=${SUDOKU_FALLBACK}"
+        record_nonfatal_issue "CF fallback service setup failed; using fallback_address=${SUDOKU_FALLBACK}"
         if command -v systemctl &> /dev/null; then
             systemctl stop "${FALLBACK_SERVICE_NAME}" >/dev/null 2>&1 || true
             systemctl disable "${FALLBACK_SERVICE_NAME}" >/dev/null 2>&1 || true
@@ -1536,7 +1563,9 @@ prepare_existing_install_output() {
 
     if [[ -z "${SUBSCRIPTION_URL:-}" ]]; then
         if [[ -n "${SUBSCRIPTION_PATH:-}" ]]; then
-            derive_subscription_domain
+            if ! derive_subscription_domain; then
+                return 1
+            fi
         else
             warn "Subscription path missing in ${EXPORT_STATE_FILE}; cannot rebuild HTTPS subscription URL."
             return 1
@@ -1742,6 +1771,27 @@ EOF
     fi
 }
 
+wait_for_sudoku_port() {
+    local attempts="${1:-10}"
+    local delay="${2:-1}"
+    local attempt
+    for attempt in $(seq 1 "${attempts}"); do
+        if is_tcp_port_in_use "${SUDOKU_PORT}"; then
+            return 0
+        fi
+        sleep "${delay}"
+    done
+    return 1
+}
+
+ensure_sudoku_core_ready() {
+    if ! wait_for_sudoku_port 10 1; then
+        error "Sudoku core did not open port ${SUDOKU_PORT}. Check: journalctl -u ${SERVICE_NAME}"
+    fi
+    SUDOKU_CORE_READY="true"
+    success "Sudoku core is listening on port ${SUDOKU_PORT}"
+}
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Generate Short Link
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1803,13 +1853,13 @@ derive_subscription_domain() {
     elif is_hostname_like "${SERVER_IP}"; then
         SUBSCRIPTION_DOMAIN="${SERVER_IP}"
     elif is_ipv6_address "${SERVER_IP}"; then
-        error "Auto-generating a subscription domain from IPv6 is not supported. Please set SUDOKU_SUBSCRIPTION_DOMAIN manually."
+        return_error "Auto-generating a subscription domain from IPv6 is not supported. Please set SUDOKU_SUBSCRIPTION_DOMAIN manually."
     else
-        error "Cannot derive subscription domain from SERVER_IP=${SERVER_IP}. Please set SUDOKU_SUBSCRIPTION_DOMAIN manually."
+        return_error "Cannot derive subscription domain from SERVER_IP=${SERVER_IP}. Please set SUDOKU_SUBSCRIPTION_DOMAIN manually."
     fi
 
     if ! is_hostname_like "${SUBSCRIPTION_DOMAIN}" && ! is_ipv4_address "${SUBSCRIPTION_DOMAIN}" && ! is_ipv6_address "${SUBSCRIPTION_DOMAIN}"; then
-        error "Invalid SUDOKU_SUBSCRIPTION_DOMAIN=${SUBSCRIPTION_DOMAIN}"
+        return_error "Invalid SUDOKU_SUBSCRIPTION_DOMAIN=${SUBSCRIPTION_DOMAIN}"
     fi
 
     if [[ -z "${ACME_EMAIL}" ]]; then
@@ -1895,7 +1945,9 @@ fetch_subscription_template() {
 generate_subscription_config() {
     info "Generating Mihomo HTTPS subscription..."
 
-    derive_subscription_domain
+    if ! derive_subscription_domain; then
+        return 1
+    fi
     mkdir -p "${SUBSCRIPTION_WWW_DIR}" "${SUBSCRIPTION_RUNTIME_DIR}"
 
     local template_file head_file tail_file node_name server_escaped key_escaped host_escaped path_root_escaped
@@ -1903,27 +1955,31 @@ generate_subscription_config() {
     head_file="${SUBSCRIPTION_RUNTIME_DIR}/template.head"
     tail_file="${SUBSCRIPTION_RUNTIME_DIR}/template.tail"
 
-    awk '
+    if ! awk '
         /^proxies:[[:space:]]*$/ { exit }
         /^proxy-groups:[[:space:]]*$/ { exit }
         /^rule-providers:[[:space:]]*$/ { exit }
         { print }
-    ' "${template_file}" > "${head_file}"
+    ' "${template_file}" > "${head_file}"; then
+        return_error "Failed to render subscription template header"
+    fi
 
-    awk '
+    if ! awk '
         /^rule-providers:[[:space:]]*$/ { found = 1 }
         found { print }
-    ' "${template_file}" > "${tail_file}"
+    ' "${template_file}" > "${tail_file}"; then
+        return_error "Failed to render subscription template tail"
+    fi
 
     if [[ ! -s "${tail_file}" ]]; then
-        error "Subscription template is missing a rule-providers section"
+        return_error "Subscription template is missing a rule-providers section"
     fi
 
     node_name=$(yaml_escape_double_quoted "${SUBSCRIPTION_NODE_NAME}")
     server_escaped=$(yaml_escape_double_quoted "${SERVER_IP}")
     key_escaped=$(yaml_escape_double_quoted "${AVAILABLE_PRIVATE_KEY}")
 
-    {
+    if ! {
         cat "${head_file}"
         echo ""
         echo "proxies:"
@@ -1963,7 +2019,9 @@ generate_subscription_config() {
         printf '      - "%s"\n' "${node_name}"
         echo ""
         cat "${tail_file}"
-    } > "${SUBSCRIPTION_OUTPUT_FILE}"
+    } > "${SUBSCRIPTION_OUTPUT_FILE}"; then
+        return_error "Failed to write subscription YAML"
+    fi
 
     success "Subscription YAML generated: ${SUBSCRIPTION_OUTPUT_FILE}"
 }
@@ -2313,8 +2371,12 @@ ensure_acme_client() {
     fi
 
     info "Installing acme.sh client..."
-    curl -fsSL "https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh" -o "${ACME_BIN}"
-    chmod 755 "${ACME_BIN}"
+    if ! curl -fsSL "https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh" -o "${ACME_BIN}"; then
+        return_error "Failed to download acme.sh client"
+    fi
+    if ! chmod 755 "${ACME_BIN}"; then
+        return_error "Failed to prepare acme.sh client"
+    fi
     success "acme.sh installed at ${ACME_BIN}"
 }
 
@@ -2322,12 +2384,12 @@ start_temp_subscription_http_server() {
     if is_tcp_port_in_use "${SUBSCRIPTION_HTTP_PORT}"; then
         if ! stop_acme_port_blockers; then
             restore_acme_port_blockers
-            error "Port ${SUBSCRIPTION_HTTP_PORT} is still occupied after attempting temporary release. Please free the port and retry."
+            return_error "Port ${SUBSCRIPTION_HTTP_PORT} is still occupied after attempting temporary release. Please free the port and retry."
         fi
     fi
     if is_tcp_port_in_use "${SUBSCRIPTION_HTTP_PORT}"; then
         restore_acme_port_blockers
-        error "Port ${SUBSCRIPTION_HTTP_PORT} is already in use. ACME HTTP-01 validation requires this port to be reachable."
+        return_error "Port ${SUBSCRIPTION_HTTP_PORT} is already in use. ACME HTTP-01 validation requires this port to be reachable."
     fi
 
     nohup python3 "${SUBSCRIPTION_SERVER_SCRIPT}" --config "${SUBSCRIPTION_SERVER_CONFIG}" --http-only \
@@ -2336,7 +2398,7 @@ start_temp_subscription_http_server() {
     sleep 1
     if ! kill -0 "${SUBSCRIPTION_TEMP_PID}" >/dev/null 2>&1; then
         restore_acme_port_blockers
-        error "Failed to start temporary HTTP server for ACME challenge"
+        return_error "Failed to start temporary HTTP server for ACME challenge"
     fi
 }
 
@@ -2350,12 +2412,20 @@ stop_temp_subscription_http_server() {
 }
 
 issue_subscription_certificate() {
-    ensure_acme_client
-    write_subscription_server
-    write_subscription_server_config
+    if ! ensure_acme_client; then
+        return 1
+    fi
+    if ! write_subscription_server; then
+        return_error "Failed to write subscription server"
+    fi
+    if ! write_subscription_server_config; then
+        return_error "Failed to write subscription server config"
+    fi
 
     local started_temp="false"
-    start_temp_subscription_http_server
+    if ! start_temp_subscription_http_server; then
+        return 1
+    fi
     started_temp="true"
 
     info "Issuing ACME certificate for ${SUBSCRIPTION_DOMAIN}..."
@@ -2364,7 +2434,7 @@ issue_subscription_certificate() {
         if [[ "${started_temp}" == "true" ]]; then
             stop_temp_subscription_http_server
         fi
-        error "Failed to issue ACME certificate for ${SUBSCRIPTION_DOMAIN}"
+        return_error "Failed to issue ACME certificate for ${SUBSCRIPTION_DOMAIN}"
     fi
 
     if ! "${ACME_BIN}" --home "${ACME_HOME}" --install-cert -d "${SUBSCRIPTION_DOMAIN}" --ecc \
@@ -2374,11 +2444,15 @@ issue_subscription_certificate() {
         if [[ "${started_temp}" == "true" ]]; then
             stop_temp_subscription_http_server
         fi
-        error "Failed to install ACME certificate for ${SUBSCRIPTION_DOMAIN}"
+        return_error "Failed to install ACME certificate for ${SUBSCRIPTION_DOMAIN}"
     fi
 
-    chmod 644 "${SUBSCRIPTION_CERT_FILE}"
-    chmod 600 "${SUBSCRIPTION_KEY_FILE}"
+    if ! chmod 644 "${SUBSCRIPTION_CERT_FILE}"; then
+        return_error "Failed to set certificate permissions"
+    fi
+    if ! chmod 600 "${SUBSCRIPTION_KEY_FILE}"; then
+        return_error "Failed to set private key permissions"
+    fi
 
     if [[ "${started_temp}" == "true" ]]; then
         stop_temp_subscription_http_server
@@ -2389,10 +2463,17 @@ issue_subscription_certificate() {
 
 create_subscription_service() {
     info "Creating HTTPS subscription service..."
-    write_subscription_server
-    write_subscription_server_config
+    if ! command -v systemctl >/dev/null 2>&1; then
+        return_error "systemctl not found; HTTPS subscription service cannot be created"
+    fi
+    if ! write_subscription_server; then
+        return_error "Failed to write subscription server"
+    fi
+    if ! write_subscription_server_config; then
+        return_error "Failed to write subscription server config"
+    fi
 
-    cat > "/etc/systemd/system/${SUBSCRIPTION_SERVICE_NAME}.service" << EOF
+    if ! cat > "/etc/systemd/system/${SUBSCRIPTION_SERVICE_NAME}.service" << EOF
 [Unit]
 Description=Sudoku Mihomo HTTPS Subscription
 After=network.target
@@ -2406,22 +2487,36 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
+    then
+        return_error "Failed to write ${SUBSCRIPTION_SERVICE_NAME}.service"
+    fi
 
-    systemctl daemon-reload
-    systemctl enable "${SUBSCRIPTION_SERVICE_NAME}" >/dev/null 2>&1
-    systemctl restart "${SUBSCRIPTION_SERVICE_NAME}" >/dev/null 2>&1 || systemctl start "${SUBSCRIPTION_SERVICE_NAME}" >/dev/null 2>&1
+    if ! systemctl daemon-reload; then
+        return_error "Failed to reload systemd for ${SUBSCRIPTION_SERVICE_NAME}"
+    fi
+    if ! systemctl enable "${SUBSCRIPTION_SERVICE_NAME}" >/dev/null 2>&1; then
+        return_error "Failed to enable ${SUBSCRIPTION_SERVICE_NAME}"
+    fi
+    if ! systemctl restart "${SUBSCRIPTION_SERVICE_NAME}" >/dev/null 2>&1 && ! systemctl start "${SUBSCRIPTION_SERVICE_NAME}" >/dev/null 2>&1; then
+        return_error "Failed to start ${SUBSCRIPTION_SERVICE_NAME}"
+    fi
 
     if systemctl is-active --quiet "${SUBSCRIPTION_SERVICE_NAME}"; then
         success "HTTPS subscription service started"
     else
-        error "HTTPS subscription service failed to start. Check: journalctl -u ${SUBSCRIPTION_SERVICE_NAME}"
+        return_error "HTTPS subscription service failed to start. Check: journalctl -u ${SUBSCRIPTION_SERVICE_NAME}"
     fi
 }
 
 create_acme_renew_timer() {
-    write_subscription_renew_script
+    if ! command -v systemctl >/dev/null 2>&1; then
+        return_error "systemctl not found; ACME renew timer cannot be created"
+    fi
+    if ! write_subscription_renew_script; then
+        return_error "Failed to write ACME renew script"
+    fi
 
-    cat > "/etc/systemd/system/sudoku-acme-renew.service" << EOF
+    if ! cat > "/etc/systemd/system/sudoku-acme-renew.service" << EOF
 [Unit]
 Description=Renew ACME certificates for Sudoku subscription
 After=network-online.target
@@ -2431,8 +2526,11 @@ Wants=network-online.target
 Type=oneshot
 ExecStart=${SUBSCRIPTION_RENEW_SCRIPT}
 EOF
+    then
+        return_error "Failed to write sudoku-acme-renew.service"
+    fi
 
-    cat > "/etc/systemd/system/${SUBSCRIPTION_ACME_TIMER_NAME}" << EOF
+    if ! cat > "/etc/systemd/system/${SUBSCRIPTION_ACME_TIMER_NAME}" << EOF
 [Unit]
 Description=Daily ACME renew check for Sudoku subscription
 
@@ -2444,17 +2542,34 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
+    then
+        return_error "Failed to write ${SUBSCRIPTION_ACME_TIMER_NAME}"
+    fi
 
-    systemctl daemon-reload
-    systemctl enable --now "${SUBSCRIPTION_ACME_TIMER_NAME}" >/dev/null 2>&1
+    if ! systemctl daemon-reload; then
+        return_error "Failed to reload systemd for ACME renew timer"
+    fi
+    if ! systemctl enable --now "${SUBSCRIPTION_ACME_TIMER_NAME}" >/dev/null 2>&1; then
+        return_error "Failed to enable ${SUBSCRIPTION_ACME_TIMER_NAME}"
+    fi
 }
 
 setup_subscription_https() {
-    derive_subscription_domain
-    generate_subscription_config
-    issue_subscription_certificate
-    create_subscription_service
-    create_acme_renew_timer
+    if [[ "${SUBSCRIPTION_SETUP_ENABLED}" != "true" ]]; then
+        return 0
+    fi
+    if ! generate_subscription_config; then
+        return 1
+    fi
+    if ! issue_subscription_certificate; then
+        return 1
+    fi
+    if ! create_subscription_service; then
+        return 1
+    fi
+    if ! create_acme_renew_timer; then
+        return 1
+    fi
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2473,7 +2588,14 @@ print_results() {
     echo ""
     
     echo -e "${CYAN}${BOLD}📋 Mihomo HTTPS Subscription:${NC}"
-    echo -e "${YELLOW}${SUBSCRIPTION_URL}${NC}"
+    if [[ -n "${SUBSCRIPTION_URL:-}" ]]; then
+        echo -e "${YELLOW}${SUBSCRIPTION_URL}${NC}"
+    else
+        echo -e "${YELLOW}Unavailable${NC}"
+        if [[ -n "${SUBSCRIPTION_DISABLED_REASON:-}" ]]; then
+            echo -e "  ${YELLOW}${SUBSCRIPTION_DISABLED_REASON}${NC}"
+        fi
+    fi
     echo ""
     
     echo -e "${CYAN}${BOLD}🔑 Keys (save these securely):${NC}"
@@ -2498,6 +2620,15 @@ print_results() {
     fi
     echo -e "  Binary:      ${YELLOW}${INSTALL_DIR}/sudoku${NC}"
     echo ""
+
+    if [[ ${#NONFATAL_ISSUES[@]} -gt 0 ]]; then
+        echo -e "${CYAN}${BOLD}⚠️  Non-blocking Issues:${NC}"
+        local issue
+        for issue in "${NONFATAL_ISSUES[@]}"; do
+            echo -e "  ${YELLOW}${issue}${NC}"
+        done
+        echo ""
+    fi
 
     echo -e "${CYAN}${BOLD}🧹 Uninstall:${NC}"
     printf '  %b%s%b\n' "${YELLOW}" 'sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SUDOKU-ASCII/easy-install/main/install.sh)" -- --uninstall' "${NC}"
@@ -2613,15 +2744,22 @@ main() {
     echo ""
     
     # Setup
-    setup_cf_fallback
+    if ! setup_cf_fallback; then
+        record_nonfatal_issue "Cloudflare 500 fallback setup failed; continuing with Sudoku core deployment."
+    fi
     create_config
     configure_firewall
     create_service
+    ensure_sudoku_core_ready
     
     # Generate output
     generate_short_link
-    setup_subscription_https
-    persist_export_state
+    if [[ "${SUBSCRIPTION_SETUP_ENABLED}" == "true" ]] && ! setup_subscription_https; then
+        disable_subscription_setup "HTTPS subscription setup failed after Sudoku core was ready; sudoku:// short link is still available."
+    fi
+    if ! persist_export_state; then
+        record_nonfatal_issue "Failed to save export state; current sudoku:// short link is still available in this output."
+    fi
     
     # Display results
     print_results
